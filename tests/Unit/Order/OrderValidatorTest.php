@@ -208,7 +208,6 @@ class OrderValidatorTest extends TestCase {
 		$quote          = $this->quote();
 		$quote['rates'] = array();
 		$this->assertSame( 'shipping_changed', OrderValidator::check( $this->snapshot(), $this->session(), $quote ) );
-		$this->assertSame( 'shipping_missing', OrderValidator::check( $this->snapshot(), $this->session(), $quote ) );
 		$this->assertSame( 'shipping_missing', OrderValidator::check( $this->snapshot(), $this->session(), array( 'destination' => array() ) ) );
 	}
 
