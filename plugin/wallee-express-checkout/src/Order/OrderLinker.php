@@ -65,22 +65,24 @@ final class OrderLinker {
 	 * attempt; before that it means "try again later". A failing read gets
 	 * them on the last attempt only.
 	 *
-	 * @param \WC_Order $order          Order.
-	 * @param int       $transaction_id wallee transaction ID.
-	 * @param bool      $last_attempt   Whether no automatic retry follows.
 	 * A transaction that ended without money taken (FAILED, DECLINE, VOIDED)
 	 * is not linked: the order gets one note stating that state instead of
 	 * the "complete and refund in the portal" note, and paymentEnded() tells
-	 * the caller to stop.
+	 * the caller to stop. With $fail_pending (the background job), an order
+	 * still pending is set to failed with that note.
 	 *
+	 * @param \WC_Order $order          Order.
+	 * @param int       $transaction_id wallee transaction ID.
+	 * @param bool      $last_attempt   Whether no automatic retry follows.
+	 * @param bool      $fail_pending   Whether an ended transaction sets a pending order to failed.
 	 * @return bool Whether the order now carries the main plugin's gateway.
 	 */
-	public function link( \WC_Order $order, int $transaction_id, bool $last_attempt = false ): bool {
+	public function link( \WC_Order $order, int $transaction_id, bool $last_attempt = false, bool $fail_pending = false ): bool {
 		try {
 			$transaction = $this->adapter->readTransaction( $transaction_id );
 			$state       = $this->adapter->transactionState( $transaction );
 			if ( in_array( $state, self::ENDED_STATES, true ) ) {
-				self::notePaymentEnded( $order, $transaction_id, $state );
+				self::notePaymentEnded( $order, $transaction_id, $state, $fail_pending );
 				$this->adapter->log( sprintf( 'Order %d: transaction %d ended in state %s; not linked, no further attempt.', $order->get_id(), $transaction_id, $state ) );
 
 				return false;
@@ -150,22 +152,27 @@ final class OrderLinker {
 	 * @param \WC_Order $order          Order.
 	 * @param int       $transaction_id wallee transaction ID.
 	 * @param string    $state          FAILED, DECLINE or VOIDED.
+	 * @param bool      $fail_pending   Whether an order still pending is set to failed with the note
+	 *                                  (one note; WooCommerce sends its usual e-mails for that status).
 	 * @return bool Whether the note was added now.
 	 */
-	public static function notePaymentEnded( \WC_Order $order, int $transaction_id, string $state ): bool {
+	public static function notePaymentEnded( \WC_Order $order, int $transaction_id, string $state, bool $fail_pending = false ): bool {
 		if ( ! in_array( $state, self::ENDED_STATES, true ) || self::paymentEnded( $order ) ) {
 			return false;
 		}
 		$order->update_meta_data( self::META_PAYMENT_ENDED, $state );
 		$order->save();
-		$order->add_order_note(
-			sprintf(
-				/* translators: 1: wallee transaction ID, 2: transaction state. */
-				__( 'wallee Express Checkout: wallee transaction %1$d ended in state %2$s, so no money was taken for this order. The order is not linked to the wallee plugin and needs no refund.', 'wallee-express-checkout' ),
-				$transaction_id,
-				$state
-			)
+		$note = sprintf(
+			/* translators: 1: wallee transaction ID, 2: transaction state. */
+			__( 'wallee Express Checkout: wallee transaction %1$d ended in state %2$s, so no money was taken for this order. The order is not linked to the wallee plugin and needs no refund.', 'wallee-express-checkout' ),
+			$transaction_id,
+			$state
 		);
+		if ( $fail_pending && $order->has_status( 'pending' ) ) {
+			$order->update_status( 'failed', $note );
+		} else {
+			$order->add_order_note( $note );
+		}
 
 		return true;
 	}

@@ -300,10 +300,15 @@ class LinkSchedulerTest extends TestCase {
 		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed, 'an e-mail was never seen for this order' );
 	}
 
-	public function test_a_transaction_that_ended_stops_the_retries_with_one_clear_note() {
+	/**
+	 * @dataProvider ended_states
+	 *
+	 * @param string $state Ended transaction state.
+	 */
+	public function test_a_pending_order_whose_transaction_ended_is_set_to_failed_with_one_note( string $state ) {
 		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
 		$this->adapter->gateway                         = null;
-		$this->adapter->state                           = 'FAILED';
+		$this->adapter->state                           = $state;
 
 		$this->scheduler()->run( 501 );
 		$this->scheduler()->run( 501 );
@@ -311,10 +316,44 @@ class LinkSchedulerTest extends TestCase {
 		$this->assertSame( array(), $this->scheduled, 'no further attempt' );
 		$this->scheduler()->retryNow( $this->order );
 		$this->assertSame( array( 629017977 ), $this->adapter->reads, 'neither the second run nor an admin view reads again' );
+		$this->assertSame( 'failed', $this->order->status );
 		$this->assertCount( 1, $this->order->notes );
-		$this->assertStringContainsString( 'ended in state FAILED, so no money was taken', $this->order->notes[0] );
+		$this->assertStringContainsString( 'ended in state ' . $state . ', so no money was taken', $this->order->notes[0] );
 		$this->assertSame( '', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
-		$this->assertSame( array(), $this->orders->failed, 'the status is left to the merchant' );
+	}
+
+	public function ended_states(): array {
+		return array(
+			'failed'  => array( 'FAILED' ),
+			'decline' => array( 'DECLINE' ),
+			'voided'  => array( 'VOIDED' ),
+		);
+	}
+
+	/**
+	 * @dataProvider other_statuses
+	 *
+	 * @param string $status Order status.
+	 */
+	public function test_an_order_in_another_status_keeps_it_when_its_transaction_ended( string $status ) {
+		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+		$this->order->status                            = $status;
+		$this->adapter->gateway                         = null;
+		$this->adapter->state                           = 'DECLINE';
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( $status, $this->order->status );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'ended in state DECLINE', $this->order->notes[0] );
+	}
+
+	public function other_statuses(): array {
+		return array(
+			'on-hold'    => array( 'on-hold' ),
+			'processing' => array( 'processing' ),
+			'cancelled'  => array( 'cancelled' ),
+		);
 	}
 
 	public function test_an_unexpected_error_in_a_run_is_logged_by_class_and_retried() {

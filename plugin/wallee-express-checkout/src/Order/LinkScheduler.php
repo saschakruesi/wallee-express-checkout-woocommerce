@@ -308,7 +308,7 @@ final class LinkScheduler {
 			return false;
 		}
 
-		return $this->linker->link( $order, $transaction_id, $last ) || OrderLinker::paymentEnded( $order );
+		return $this->linker->link( $order, $transaction_id, $last, true ) || OrderLinker::paymentEnded( $order );
 	}
 
 	/**

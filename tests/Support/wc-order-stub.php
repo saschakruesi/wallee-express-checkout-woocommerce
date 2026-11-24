@@ -161,6 +161,14 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 			return $this->id;
 		}
 
+		public function update_status( $status, $note = '' ) {
+			$this->status = $status;
+			if ( '' !== $note ) {
+				$this->notes[] = $note;
+			}
+			return true;
+		}
+
 		public function get_data_store() {
 			return $this->data_store;
 		}
