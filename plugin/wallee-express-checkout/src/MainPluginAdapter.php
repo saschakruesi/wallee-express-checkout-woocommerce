@@ -150,6 +150,16 @@ class MainPluginAdapter {
 	}
 
 	/**
+	 * Verifies that the main plugin's credentials can read the configured space.
+	 *
+	 * @throws \Throwable When the client cannot be built or the space cannot be read.
+	 */
+	public function verifyCredentials(): void {
+		$service = new \Wallee\Sdk\Service\SpaceService( $this->sdkClient() );
+		$service->read( $this->spaceId() );
+	}
+
+	/**
 	 * Reads a transaction (v1 SDK model).
 	 *
 	 * @param int $transaction_id Transaction ID.

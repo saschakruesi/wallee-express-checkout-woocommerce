@@ -22,6 +22,13 @@ final class Plugin {
 	private static $adapter = null;
 
 	/**
+	 * Settings instance.
+	 *
+	 * @var Admin\Settings|null
+	 */
+	private static $settings = null;
+
+	/**
 	 * Boots the plugin on `plugins_loaded`.
 	 */
 	public static function boot(): void {
@@ -73,6 +80,18 @@ final class Plugin {
 	}
 
 	/**
+	 * The shared settings reader.
+	 *
+	 * @return Admin\Settings
+	 */
+	public static function settings(): Admin\Settings {
+		if ( null === self::$settings ) {
+			self::$settings = new Admin\Settings();
+		}
+		return self::$settings;
+	}
+
+	/**
 	 * Whether the main plugin is usable and configured.
 	 *
 	 * @return bool
@@ -86,6 +105,9 @@ final class Plugin {
 	 */
 	private static function register_components(): void {
 		Session\Installer::register();
+		if ( is_admin() ) {
+			Admin\Settings::register();
+		}
 	}
 
 	/**
