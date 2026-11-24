@@ -13,11 +13,12 @@ use Wallee\ExpressCheckout\Plugin;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Reads the add-on options and renders the section under WooCommerce > Settings > Payments.
+ * Reads the add-on options and renders the add-on's own tab under
+ * WooCommerce > Settings (owner decision: not under Payments).
  */
 class Settings {
 
-	const SECTION     = 'wallee_ec';
+	const TAB         = 'wallee_ec';
 	const ACTION      = 'wallee_ec_configure';
 	const NONCE       = 'wallee_ec_configure';
 	const NONCE_FIELD = 'wallee_ec_nonce';
@@ -102,8 +103,10 @@ class Settings {
 	 */
 	public static function register(): void {
 		$instance = new self();
-		add_filter( 'woocommerce_get_sections_checkout', array( $instance, 'addSection' ) );
-		add_filter( 'woocommerce_get_settings_checkout', array( $instance, 'fields' ), 10, 2 );
+		add_filter( 'woocommerce_settings_tabs_array', array( $instance, 'addTab' ), 50 );
+		add_action( 'woocommerce_settings_' . self::TAB, array( $instance, 'renderTab' ) );
+		add_action( 'woocommerce_update_options_' . self::TAB, array( $instance, 'saveTab' ) );
+		add_filter( 'plugin_action_links_' . plugin_basename( WALLEE_EC_FILE ), array( $instance, 'actionLinks' ) );
 		add_action( 'woocommerce_admin_field_wallee_ec_status', array( $instance, 'renderStatus' ) );
 		add_action( 'woocommerce_admin_field_wallee_ec_configure', array( $instance, 'renderConfigure' ) );
 		add_filter( 'woocommerce_admin_settings_sanitize_option_' . self::OPT_APPLE, array( $instance, 'filterAppleOption' ), 10, 2 );
@@ -112,28 +115,75 @@ class Settings {
 	}
 
 	/**
-	 * Adds the section tab.
+	 * Settings page URL of the add-on's tab.
 	 *
-	 * @param array $sections Sections.
-	 * @return array
+	 * @return string
 	 */
-	public function addSection( $sections ) {
-		$sections                  = is_array( $sections ) ? $sections : array();
-		$sections[ self::SECTION ] = __( 'wallee Express Checkout', 'wallee-express-checkout' );
-		return $sections;
+	public static function url(): string {
+		return admin_url( 'admin.php?page=wc-settings&tab=' . self::TAB );
 	}
 
 	/**
-	 * The fields of the section.
+	 * Adds the tab, right after the wallee main plugin's tab when present.
 	 *
-	 * @param array  $settings        Existing settings.
-	 * @param string $current_section Current section.
+	 * @param mixed $tabs Tab ID => label.
 	 * @return array
 	 */
-	public function fields( $settings, $current_section ) {
-		if ( self::SECTION !== $current_section ) {
-			return $settings;
+	public function addTab( $tabs ) {
+		$tabs  = is_array( $tabs ) ? $tabs : array();
+		$label = __( 'wallee Express Checkout', 'wallee-express-checkout' );
+		unset( $tabs[ self::TAB ] );
+		if ( ! array_key_exists( 'wallee', $tabs ) ) {
+			$tabs[ self::TAB ] = $label;
+			return $tabs;
 		}
+
+		$ordered = array();
+		foreach ( $tabs as $id => $title ) {
+			$ordered[ $id ] = $title;
+			if ( 'wallee' === $id ) {
+				$ordered[ self::TAB ] = $label;
+			}
+		}
+		return $ordered;
+	}
+
+	/**
+	 * Renders the tab.
+	 */
+	public function renderTab(): void {
+		woocommerce_admin_fields( $this->fields() );
+	}
+
+	/**
+	 * Saves the tab. WooCommerce has checked the settings nonce and the capability.
+	 */
+	public function saveTab(): void {
+		woocommerce_update_options( $this->fields() );
+	}
+
+	/**
+	 * Adds a "Settings" link to the add-on's row on the Plugins screen.
+	 *
+	 * @param mixed $links Action links.
+	 * @return array
+	 */
+	public function actionLinks( $links ) {
+		$links = is_array( $links ) ? $links : array();
+		return array_merge(
+			array(
+				'settings' => '<a href="' . esc_url( self::url() ) . '">' . esc_html__( 'Settings', 'wallee-express-checkout' ) . '</a>',
+			),
+			$links
+		);
+	}
+
+	/**
+	 * The fields of the tab.
+	 *
+	 * @return array
+	 */
+	public function fields(): array {
 		return array(
 			array(
 				'title' => __( 'wallee Express Checkout', 'wallee-express-checkout' ),
@@ -296,7 +346,7 @@ class Settings {
 		$results = ( new SetupService( Plugin::adapter() ) )->run();
 		set_transient( $this->resultKey(), $results, 60 );
 
-		wp_safe_redirect( admin_url( 'admin.php?page=wc-settings&tab=checkout&section=' . self::SECTION ) );
+		wp_safe_redirect( self::url() );
 		exit;
 	}
 
@@ -305,8 +355,8 @@ class Settings {
 	 */
 	public function showResults(): void {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only page check.
-		$section = isset( $_GET['section'] ) ? sanitize_key( wp_unslash( $_GET['section'] ) ) : '';
-		if ( self::SECTION !== $section || ! current_user_can( 'manage_woocommerce' ) ) { // phpcs:ignore WordPress.WP.Capabilities.Unknown
+		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+		if ( self::TAB !== $tab || ! current_user_can( 'manage_woocommerce' ) ) { // phpcs:ignore WordPress.WP.Capabilities.Unknown
 			return;
 		}
 		$results = get_transient( $this->resultKey() );
