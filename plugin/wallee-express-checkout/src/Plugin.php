@@ -85,6 +85,7 @@ final class Plugin {
 	 * Wires the components. Later tasks add one line each here.
 	 */
 	private static function register_components(): void {
+		Session\Installer::register();
 	}
 
 	/**

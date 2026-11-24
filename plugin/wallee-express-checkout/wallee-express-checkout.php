@@ -22,6 +22,13 @@ require_once WALLEE_EC_PATH . 'src/Autoloader.php';
 
 \Wallee\ExpressCheckout\Autoloader::register( WALLEE_EC_PATH . 'src' );
 
+register_activation_hook(
+	WALLEE_EC_FILE,
+	static function () {
+		\Wallee\ExpressCheckout\Session\Installer::install();
+	}
+);
+
 add_action(
 	'before_woocommerce_init',
 	static function () {
