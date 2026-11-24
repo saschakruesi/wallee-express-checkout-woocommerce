@@ -12,6 +12,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Order\TaxDestination;
+use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wc-order-stub.php';
@@ -103,6 +104,58 @@ class TaxDestinationTest extends TestCase {
 		$this->assertTrue( TaxDestination::sameRates( $snapshot, self::address( 'US', 'ca' ) ) );
 		$this->assertFalse( TaxDestination::sameRates( $snapshot, self::address( 'US', 'NY' ) ) );
 		$this->assertFalse( TaxDestination::sameRates( $snapshot, self::address( 'US', '' ) ) );
+	}
+
+	/**
+	 * Snapshot for California with state rates for California and New York.
+	 */
+	private function us_state_rates(): CartSnapshot {
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
+		\WC_Tax::$rows[] = \WC_Tax::row( 20, 'US', '', 7.25, array( 'state' => 'CA' ) );
+		\WC_Tax::$rows[] = \WC_Tax::row( 21, 'US', '', 4.0, array( 'state' => 'NY' ) );
+
+		return $this->snapshot( array( 'country' => 'US', 'state' => 'CA', 'postcode' => '', 'city' => '' ) );
+	}
+
+	/**
+	 * @dataProvider region_names
+	 *
+	 * @param string $region   wallee's region.
+	 * @param string $expected Comparison result.
+	 */
+	public function test_wallees_region_is_compared_by_its_woocommerce_state_code( string $region, string $expected ) {
+		$this->assertSame( $expected, TaxDestination::compare( $this->us_state_rates(), self::address( 'US', $region ) ) );
+	}
+
+	public function region_names(): array {
+		return array(
+			'name'               => array( 'California', TaxDestination::SAME ),
+			'ISO code'           => array( 'US-CA', TaxDestination::SAME ),
+			'other state name'   => array( 'New York', TaxDestination::DIFFERENT ),
+			'unresolvable'       => array( 'Calif.', TaxDestination::REGION_UNMATCHED ),
+		);
+	}
+
+	public function test_an_unresolvable_region_is_not_refused() {
+		$this->assertTrue( TaxDestination::sameRates( $this->us_state_rates(), self::address( 'US', 'Calif.' ) ) );
+	}
+
+	public function test_an_unresolvable_region_needs_no_check_when_rates_do_not_depend_on_the_state() {
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
+		\WC_Tax::$rows[] = \WC_Tax::row( 22, 'US', '', 5.0 );
+		$snapshot        = $this->snapshot( array( 'country' => 'US', 'state' => 'CA', 'postcode' => '', 'city' => '' ) );
+
+		$this->assertSame( TaxDestination::SAME, TaxDestination::compare( $snapshot, self::address( 'US', 'Calif.' ) ) );
+	}
+
+	public function test_an_unresolvable_region_still_compares_the_postcode() {
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
+		\WC_Tax::$rows[] = \WC_Tax::row( 20, 'US', '', 7.25, array( 'state' => 'CA' ) );
+		\WC_Tax::$rows[] = \WC_Tax::row( 23, 'US', '', 1.0, array( 'postcode' => '90*' ) );
+		$snapshot        = $this->snapshot( array( 'country' => 'US', 'state' => 'CA', 'postcode' => '90001', 'city' => '' ) );
+
+		$this->assertSame( TaxDestination::REGION_UNMATCHED, TaxDestination::compare( $snapshot, self::address( 'US', 'Calif.', '90210' ) ) );
+		$this->assertSame( TaxDestination::DIFFERENT, TaxDestination::compare( $snapshot, self::address( 'US', 'Calif.', '10001' ) ) );
 	}
 
 	public function test_postcode_specific_rates_refuse_another_postcode_in_the_same_country() {

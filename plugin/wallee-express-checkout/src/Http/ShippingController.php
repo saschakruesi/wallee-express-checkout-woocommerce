@@ -16,6 +16,7 @@ use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Session\SessionService;
 use Wallee\ExpressCheckout\Shipping\ShippingOptionsProvider;
 use Wallee\ExpressCheckout\Shipping\ShippingRateMapper;
+use Wallee\ExpressCheckout\Support\StateCode;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -185,9 +186,10 @@ final class ShippingController {
 			return self::failure( 429, 'rate_limited' );
 		}
 
+		$country     = strtoupper( $body['countryCode'] );
 		$destination = array(
-			'country'   => strtoupper( $body['countryCode'] ),
-			'state'     => self::text( $body, 'state' ),
+			'country'   => $country,
+			'state'     => StateCode::normalise( $country, self::text( $body, 'state' ) ),
 			'postcode'  => self::text( $body, 'postalCode' ),
 			'city'      => self::text( $body, 'city' ),
 			'address_1' => self::text( $body, 'street' ),

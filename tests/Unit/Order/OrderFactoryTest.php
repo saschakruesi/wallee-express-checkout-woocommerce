@@ -12,6 +12,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Order\OrderFactory;
+use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wc-order-stub.php';
@@ -155,6 +156,58 @@ class OrderFactoryTest extends TestCase {
 					'attribute_bad'      => array( 'x' ),
 				)
 			)
+		);
+	}
+
+	/**
+	 * @dataProvider stored_regions
+	 *
+	 * @param string $region   wallee's `postalState`.
+	 * @param string $expected State stored on the order.
+	 */
+	public function test_the_order_stores_the_woocommerce_state_code_when_the_region_resolves( string $region, string $expected ) {
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
+		Functions\when( 'sanitize_text_field' )->alias( 'trim' );
+		Functions\when( 'is_email' )->justReturn( false );
+		$order = new class( 501, 10.0 ) extends \WC_Order {
+			/**
+			 * Addresses set, by type.
+			 *
+			 * @var array
+			 */
+			public $addresses = array();
+
+			/**
+			 * Records an address.
+			 *
+			 * @param array  $address Address.
+			 * @param string $type    `billing` or `shipping`.
+			 */
+			public function set_address( $address, $type ) {
+				$this->addresses[ $type ] = $address;
+			}
+		};
+
+		OrderFactory::applyCustomer(
+			$order,
+			array(
+				'shippingAddress' => array(
+					'country'     => 'US',
+					'postalState' => $region,
+				),
+			),
+			0
+		);
+
+		$this->assertSame( $expected, $order->addresses['shipping']['state'] );
+		$this->assertSame( $expected, $order->addresses['billing']['state'] );
+	}
+
+	public function stored_regions(): array {
+		return array(
+			'name'         => array( 'California', 'CA' ),
+			'ISO code'     => array( 'US-NY', 'NY' ),
+			'unresolvable' => array( 'Calif.', 'Calif.' ),
 		);
 	}
 

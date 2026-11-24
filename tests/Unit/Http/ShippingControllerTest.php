@@ -476,6 +476,38 @@ class ShippingControllerTest extends TestCase {
 		$this->assertSame( 'Express checkout is not available for this delivery address. Please choose another address or use the regular checkout.', $result['body']['error']['message'] );
 	}
 
+	public function test_wallees_region_name_is_matched_to_the_state_code_for_taxes_rates_and_the_quote() {
+		$this->tax_basis( true );
+		\WC_Tax::$rows[] = \WC_Tax::row( 20, 'US', '', 7.25, array( 'state' => 'CA' ) );
+		\WC_Tax::$rows[] = \WC_Tax::row( 21, 'US', '', 4.0, array( 'state' => 'NY' ) );
+		$data            = CartSnapshotTest::data();
+		$data['tax_location'] = array(
+			'country'  => 'US',
+			'state'    => 'CA',
+			'postcode' => '',
+			'city'     => '',
+		);
+		$this->stored_row( 'created', null, $data );
+		$this->provider->expects( $this->once() )->method( 'ratesFor' )
+			->with(
+				$this->anything(),
+				$this->callback(
+					static function ( $destination ) {
+						return 'CA' === $destination['state'];
+					}
+				)
+			)
+			->willReturn( array( $this->rate() ) );
+		$this->db->next_rows_affected = 1;
+
+		$result = $this->handle( $this->body( array( 'countryCode' => 'US', 'state' => 'California' ) ) );
+
+		$this->assertNull( $result['body']['error'] );
+		$writes = $this->quote_writes();
+		$this->assertCount( 1, $writes );
+		$this->assertStringContainsString( '"state":"CA"', stripslashes( $writes[0] ) );
+	}
+
 	public function test_a_postcode_with_other_rates_in_the_same_country_gets_no_options() {
 		$this->tax_basis( true );
 		\WC_Tax::$rows[] = \WC_Tax::row( 40, 'CH', '', 1.0, array( 'postcode' => '8000' ) );

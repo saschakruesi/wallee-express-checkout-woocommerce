@@ -15,6 +15,7 @@ use Wallee\ExpressCheckout\Session\SessionRecord;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
 use Wallee\ExpressCheckout\Tests\Support\FakeOrderService;
 use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
+use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 use Wallee\ExpressCheckout\Tests\Unit\Http\ReturnHandlerTest;
 
@@ -176,6 +177,39 @@ class CustomerDetailsTest extends TestCase {
 		$this->details()->collectAfterPayment( $this->record(), $this->order );
 
 		$this->assertSame( array( self::NOTE_PREFIX . 'destination_changed).' ), $this->order->notes );
+	}
+
+	public function test_a_deferred_check_with_an_unmatched_region_keeps_the_order_and_asks_to_check_the_tax() {
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
+		$this->tax_follows  = true;
+		$this->tax_based_on = 'billing';
+		\WC_Tax::$rows[]   = \WC_Tax::row( 20, 'US', '', 7.25, array( 'state' => 'CA' ) );
+		$data               = CartSnapshotTest::data();
+		$data['coupons']    = array();
+		$data['tax_location'] = array(
+			'country'  => 'US',
+			'state'    => 'CA',
+			'postcode' => '',
+			'city'     => '',
+		);
+		$this->repository = new FakeSessionRepository(
+			$data,
+			array(
+				'state'    => 'processed',
+				'order_id' => 501,
+			)
+		);
+		$this->deferred();
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'US' );
+		$this->api->transaction['billingAddress']  = array(
+			'country'     => 'US',
+			'postalState' => 'Calif.',
+		);
+
+		$this->details()->collectAfterPayment( $this->record(), $this->order );
+
+		$this->assertSame( array( 'ACTION REQUIRED: check tax (region could not be matched).' ), $this->order->notes );
+		$this->assertFalse( CustomerDetails::checksPending( $this->order ) );
 	}
 
 	public function test_a_deferred_coupon_check_that_throws_asks_for_a_manual_check() {

@@ -44,6 +44,13 @@ final class OrderValidator {
 	const DESTINATION_CHANGED = 'destination_changed';
 
 	/**
+	 * Not a refusal: the region of the address taxes are based on matches no
+	 * WooCommerce state while the country's rates depend on the state; the
+	 * order is kept with TaxDestination::regionNote().
+	 */
+	const TAX_REGION_UNMATCHED = 'tax_region_unmatched';
+
+	/**
 	 * The one shipping option the customer selected.
 	 *
 	 * @param array $session Session as returned by the wallee API.
@@ -176,7 +183,8 @@ final class OrderValidator {
 	 * @param string       $country     Country of the shipping address (billing as fallback), empty if unknown.
 	 * @param array|null   $tax_address Address taxes are based on (TaxDestination::orderAddress()), null when
 	 *                                  taxes do not follow the customer's address.
-	 * @return string|null Null if consistent or the country is unknown, else `destination_changed`.
+	 * @return string|null Null if consistent or the country is unknown, `tax_region_unmatched` if consistent
+	 *                     apart from a region that matches no state (not a refusal), else `destination_changed`.
 	 */
 	public static function destination( CartSnapshot $snapshot, ?array $quote, string $country, ?array $tax_address ): ?string {
 		if ( '' === $country ) {
@@ -186,9 +194,14 @@ final class OrderValidator {
 		if ( is_string( $quoted ) && 0 !== strcasecmp( $quoted, $country ) ) {
 			return self::DESTINATION_CHANGED;
 		}
-		if ( null !== $tax_address && isset( $tax_address['country'] ) && is_string( $tax_address['country'] ) && '' !== $tax_address['country']
-			&& ! TaxDestination::sameRates( $snapshot, $tax_address ) ) {
-			return self::DESTINATION_CHANGED;
+		if ( null !== $tax_address && isset( $tax_address['country'] ) && is_string( $tax_address['country'] ) && '' !== $tax_address['country'] ) {
+			$rates = TaxDestination::compare( $snapshot, $tax_address );
+			if ( TaxDestination::DIFFERENT === $rates ) {
+				return self::DESTINATION_CHANGED;
+			}
+			if ( TaxDestination::REGION_UNMATCHED === $rates ) {
+				return self::TAX_REGION_UNMATCHED;
+			}
 		}
 
 		return null;

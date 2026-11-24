@@ -248,6 +248,11 @@ final class CustomerDetails {
 
 		$tax_address = $this->tax_follows_address ? TaxDestination::orderAddress( $order ) : null;
 		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), OrderValidator::deliveryCountry( $order ), $tax_address );
+		if ( OrderValidator::TAX_REGION_UNMATCHED === $destination ) {
+			$this->orders->addNoteOnce( $order, TaxDestination::regionNote() );
+			call_user_func( $this->log, sprintf( 'Order %d: tax region not matched; order kept with a note.', $order->get_id() ), 'warning' );
+			$destination = null;
+		}
 
 		return null !== $destination ? $destination : $coupons;
 	}

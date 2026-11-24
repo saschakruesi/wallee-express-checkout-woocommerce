@@ -11,6 +11,7 @@ use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Cart\LineItemBuilder;
 use Wallee\ExpressCheckout\Cart\VariationAttributes;
 use Wallee\ExpressCheckout\Support\Money;
+use Wallee\ExpressCheckout\Support\StateCode;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -471,7 +472,9 @@ final class OrderFactory {
 
 	/**
 	 * Maps a wallee address to the WooCommerce address fields. Every field is
-	 * optional and sanitised.
+	 * optional and sanitised. wallee's free-text region becomes the
+	 * WooCommerce state code when it resolves (StateCode), else it is kept
+	 * as sent.
 	 *
 	 * @param mixed $address wallee address or null.
 	 */
@@ -482,6 +485,7 @@ final class OrderFactory {
 			$postal = self::field( $address, 'postCode' );
 		}
 		$country = strtoupper( self::field( $address, 'country' ) );
+		$country = 1 === preg_match( '/^[A-Z]{2}$/', $country ) ? $country : '';
 
 		return array(
 			'first_name' => self::field( $address, 'givenName' ),
@@ -491,8 +495,8 @@ final class OrderFactory {
 			'address_2'  => '',
 			'city'       => self::field( $address, 'city' ),
 			'postcode'   => $postal,
-			'state'      => self::field( $address, 'postalState' ),
-			'country'    => 1 === preg_match( '/^[A-Z]{2}$/', $country ) ? $country : '',
+			'state'      => StateCode::normalise( $country, self::field( $address, 'postalState' ) ),
+			'country'    => $country,
 			'phone'      => self::field( $address, 'phoneNumber' ),
 		);
 	}

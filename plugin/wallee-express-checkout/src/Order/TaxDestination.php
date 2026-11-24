@@ -8,6 +8,7 @@
 namespace Wallee\ExpressCheckout\Order;
 
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
+use Wallee\ExpressCheckout\Support\StateCode;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -83,22 +84,81 @@ final class TaxDestination {
 	}
 
 	/**
+	 * The address has the same tax rates as the tax location.
+	 */
+	const SAME = 'same';
+
+	/**
+	 * The address has other tax rates than the tax location.
+	 */
+	const DIFFERENT = 'different';
+
+	/**
+	 * The address's region matches no WooCommerce state of its country and
+	 * the country's rates depend on the state: the state was left out of the
+	 * comparison, the rest matched. Not a refusal; the order needs a check.
+	 */
+	const REGION_UNMATCHED = 'region_unmatched';
+
+	/**
 	 * Whether the address has the same tax rates as the snapshot's tax
-	 * location for every class in classes(). Rates are compared by rate ID,
-	 * percentage, compound and shipping flag.
+	 * location; see compare(). An unmatched region is not a refusal.
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
 	 * @param array        $address  Keys country, state, postcode, city (missing keys count as empty).
 	 */
 	public static function sameRates( CartSnapshot $snapshot, array $address ): bool {
-		$location = $snapshot->taxLocation();
+		return self::DIFFERENT !== self::compare( $snapshot, $address );
+	}
+
+	/**
+	 * Compares the address's tax rates with those of the snapshot's tax
+	 * location for every class in classes(). Rates are compared by rate ID,
+	 * percentage, compound and shipping flag.
+	 *
+	 * The address's state is wallee's free-text region; it is compared by its
+	 * WooCommerce state code (StateCode). A region that matches no state of
+	 * the country is left out of the comparison (the location's state is used
+	 * in the same country, none in another): REGION_UNMATCHED when the
+	 * country's rates depend on the state, else SAME, if everything else
+	 * matches.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param array        $address  Keys country, state, postcode, city (missing keys count as empty).
+	 * @return string One of SAME, DIFFERENT, REGION_UNMATCHED.
+	 */
+	public static function compare( CartSnapshot $snapshot, array $address ): string {
+		$location  = $snapshot->taxLocation();
+		$country   = self::field( $address, 'country' );
+		$state     = StateCode::resolve( $country, self::field( $address, 'state' ) );
+		$unmatched = null === $state;
+		if ( $unmatched ) {
+			$state = 0 === strcasecmp( $country, self::field( $location, 'country' ) ) ? self::field( $location, 'state' ) : '';
+		}
+		$address['state'] = $state;
+
+		$depends = false;
 		foreach ( self::classes( $snapshot ) as $tax_class ) {
-			if ( self::rates( $tax_class, $address ) !== self::rates( $tax_class, $location ) ) {
-				return false;
+			$rates = self::rates( $tax_class, $address );
+			if ( self::rates( $tax_class, $location ) !== $rates ) {
+				return self::DIFFERENT;
+			}
+			if ( $unmatched && ! $depends && '' !== $state ) {
+				$without          = $address;
+				$without['state'] = '';
+				$depends          = self::rates( $tax_class, $without ) !== $rates;
 			}
 		}
 
-		return true;
+		return $depends ? self::REGION_UNMATCHED : self::SAME;
+	}
+
+	/**
+	 * Private note for an order whose region could not be matched to a state
+	 * where the tax rates depend on it.
+	 */
+	public static function regionNote(): string {
+		return __( 'ACTION REQUIRED: check tax (region could not be matched).', 'wallee-express-checkout' );
 	}
 
 	/**

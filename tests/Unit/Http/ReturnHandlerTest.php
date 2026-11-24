@@ -1158,6 +1158,67 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
 	}
 
+	/**
+	 * Virtual purchase taxed for California (state rates for California and
+	 * New York), taxes by billing address, wallet region as given.
+	 *
+	 * @param string $region wallee's `postalState`.
+	 */
+	private function california_purchase( string $region ): void {
+		$this->virtual_purchase( 'US' );
+		$data                               = CartSnapshotTest::data();
+		$data['items'][0]['needs_shipping'] = false;
+		$data['tax_location']               = array(
+			'country'  => 'US',
+			'state'    => 'CA',
+			'postcode' => '',
+			'city'     => '',
+		);
+		$this->repository                   = new FakeSessionRepository( $data );
+		$this->tax_follows                  = true;
+		$this->tax_based_on                 = 'billing';
+		\WC_Tax::$rows[]                   = \WC_Tax::row( 20, 'US', '', 7.25, array( 'state' => 'CA' ) );
+		\WC_Tax::$rows[]                   = \WC_Tax::row( 21, 'US', '', 4.0, array( 'state' => 'NY' ) );
+
+		$this->api->transaction['billingAddress']['postalState'] = $region;
+	}
+
+	/**
+	 * @dataProvider california_names
+	 *
+	 * @param string $region wallee's region.
+	 */
+	public function test_wallees_region_name_matches_the_tax_state( string $region ) {
+		$this->california_purchase( $region );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertNotContains( 'ACTION REQUIRED: check tax (region could not be matched).', $this->orders->orders[501]->notes );
+	}
+
+	public function california_names(): array {
+		return array(
+			'name'     => array( 'California' ),
+			'ISO code' => array( 'US-CA' ),
+			'code'     => array( 'CA' ),
+		);
+	}
+
+	public function test_another_state_with_other_rates_still_fails_the_order() {
+		$this->california_purchase( 'New York' );
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_an_unmatched_region_keeps_the_order_and_asks_to_check_the_tax() {
+		$this->california_purchase( 'Calif.' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertContains( 'ACTION REQUIRED: check tax (region could not be matched).', $this->orders->orders[501]->notes );
+		$this->assertStringContainsString( 'Return: order 501: tax region not matched; order kept with a note.', implode( "\n", $this->logs ) );
+	}
+
 	private static function successUrl(): string {
 		return SessionService::resultUrl( self::UUID, 'success' );
 	}

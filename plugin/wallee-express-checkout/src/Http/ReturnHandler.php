@@ -664,8 +664,14 @@ final class ReturnHandler {
 		}
 
 		$tax_address = $this->tax_follows_address ? TaxDestination::orderAddress( $order ) : null;
-		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $tax_address ) ) {
+		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $tax_address );
+		if ( OrderValidator::DESTINATION_CHANGED === $destination ) {
 			return OrderValidator::DESTINATION_CHANGED;
+		}
+		if ( OrderValidator::TAX_REGION_UNMATCHED === $destination ) {
+			// wallee's region format is free text: an unmatched region is not a refusal.
+			$this->orders->addNoteOnce( $order, TaxDestination::regionNote() );
+			$this->log( sprintf( 'Return: order %d: tax region not matched; order kept with a note.', $order->get_id() ), 'warning' );
 		}
 
 		return $this->holdCoupons( $snapshot, $order );
