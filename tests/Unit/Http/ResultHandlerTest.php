@@ -288,7 +288,7 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'failed', $this->order->get_status() );
 		$this->assertArrayHasKey( 501, $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
-		$this->assertSame( array( 'error: The payment was not completed.' ), $this->notices );
+		$this->assertSame( array( 'error: The payment was not completed. You have not been charged. Please try again or choose another payment method.' ), $this->notices );
 		$this->assertSame( 0, $this->cart->emptied );
 	}
 
@@ -299,6 +299,7 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'processing', $this->order->get_status() );
 		$this->assertSame( array(), $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array( 'error: The payment was not completed. If an amount was reserved, it will be released. Please try again or choose another payment method.' ), $this->notices, 'a paid order: no "not charged"' );
 	}
 
 	public function test_failure_after_completion_changes_nothing() {
@@ -378,6 +379,22 @@ class ResultHandlerTest extends TestCase {
 		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 6 * 86400 );
 
 		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+	}
+	public function test_failures_without_a_known_outcome_get_the_uncertain_wording() {
+		$this->repository = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->handler()->handle( $this->query( 'success' ) );
+		$this->handler()->handle( $this->query( 'success', 'failure' ) );
+
+		$technical = 'error: The express payment could not be completed because of a technical problem. If an amount was reserved, it will be released. Please try again or use the regular checkout.';
+		$this->assertSame( array( $technical, $technical ), $this->notices );
+	}
+
+	public function test_an_expired_result_link_gets_the_expiry_notice_with_the_uncertain_wording() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 604801 );
+
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertSame( array( 'error: Your express payment session has expired. If an amount was reserved, it will be released. Please start the express payment again.' ), $this->notices );
 	}
 }
 

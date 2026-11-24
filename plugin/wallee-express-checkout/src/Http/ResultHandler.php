@@ -145,25 +145,25 @@ final class ResultHandler {
 		if ( self::STATUS_SUCCESS !== $status && self::STATUS_FAILURE !== $status ) {
 			$this->log( 'Result: unknown status.', 'warning' );
 
-			return $this->toCart( Redirects::genericNotice() );
+			return $this->toCart( Notices::forReason( 'invalid_link', Notices::CHARGE_UNKNOWN ) );
 		}
 		if ( '' === $uuid || ! $this->signer->verify( $uuid, SessionService::PURPOSE_RESULT . ':' . $status, $sig ) ) {
 			$this->log( sprintf( 'Result: invalid or missing signature for status %s.', $status ), 'warning' );
 
-			return $this->toCart( Redirects::genericNotice() );
+			return $this->toCart( Notices::forReason( 'invalid_link', Notices::CHARGE_UNKNOWN ) );
 		}
 
 		$record = $this->repository->findByUuid( $uuid );
 		if ( null !== $record && $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
 			$this->log( sprintf( 'Result: session row %d is too old for its result link.', $record->id() ), 'warning' );
 
-			return $this->toCart( Redirects::genericNotice() );
+			return $this->toCart( Notices::forReason( Notices::LINK_EXPIRED, Notices::CHARGE_UNKNOWN ) );
 		}
 		$order = null === $record || null === $record->orderId() ? null : $this->orders->find( $record->orderId() );
 		if ( null === $record || null === $order ) {
 			$this->log( sprintf( 'Result: %s for %s.', $status, null === $record ? 'an unknown session' : sprintf( 'session row %d without order', $record->id() ) ), 'warning' );
 
-			return $this->toCart( Redirects::genericNotice() );
+			return $this->toCart( Notices::forReason( 'unknown_session', Notices::CHARGE_UNKNOWN ) );
 		}
 		$this->log( sprintf( 'Result: %s for session row %d in state %s, order %d.', $status, $record->id(), $record->state(), $order->get_id() ) );
 
@@ -185,7 +185,7 @@ final class ResultHandler {
 		if ( SessionRecord::PROCESSED !== $state && SessionRecord::ORDERING !== $state ) {
 			$this->log( sprintf( 'Result: success ignored for session row %d in state %s.', $record->id(), $state ), 'warning' );
 
-			return $this->toCart( Redirects::genericNotice() );
+			return $this->toCart( Notices::forReason( 'success_ignored', Notices::CHARGE_UNKNOWN ) );
 		}
 
 		// The customer may have paid: a missing e-mail only gets a note here.
@@ -246,7 +246,7 @@ final class ResultHandler {
 		if ( SessionRecord::FAILED !== $state ) {
 			if ( $order->has_status( 'pending' ) ) {
 				try {
-					$this->orders->fail( $order, 'payment_not_completed' );
+					$this->orders->fail( $order, Notices::PAYMENT_NOT_COMPLETED );
 					$this->log( sprintf( 'Result: order %d pending -> failed.', $order->get_id() ) );
 				} catch ( \Throwable $e ) {
 					$this->log( sprintf( 'Result: order %d could not be set to failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
@@ -257,7 +257,10 @@ final class ResultHandler {
 			$this->setState( $record, SessionRecord::FAILED );
 		}
 
-		return $this->toCart( __( 'The payment was not completed.', 'wallee-express-checkout' ) );
+		// An order the webhook has moved on (paid) keeps the uncertain wording.
+		$charge = $order->has_status( array( 'pending', 'failed', 'cancelled' ) ) ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN;
+
+		return $this->toCart( Notices::forReason( Notices::PAYMENT_NOT_COMPLETED, $charge ) );
 	}
 
 	/**
@@ -308,7 +311,7 @@ final class ResultHandler {
 	 * @param string $notice Notice.
 	 */
 	private function toCart( string $notice ): string {
-		wc_add_notice( $notice, 'error' );
+		Notices::add( $notice );
 
 		return wc_get_cart_url();
 	}

@@ -15,6 +15,7 @@ use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Shipping\ShippingOptionsProvider;
+use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Support\FakeWpdb;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
@@ -48,6 +49,7 @@ class ShippingControllerTest extends TestCase {
 		Monkey\setUp();
 		Functions\when( '__' )->returnArg();
 		Functions\when( 'sanitize_text_field' )->alias( 'trim' );
+		Functions\when( 'WC' )->justReturn( new FakeWc() );
 		Functions\when( 'wp_json_encode' )->alias(
 			static function ( $data ) {
 				return json_encode( $data ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
@@ -253,7 +255,7 @@ class ShippingControllerTest extends TestCase {
 		$this->assertSame( 200, $result['status'] );
 		$this->assertSame( array(), $result['body']['shippingOptions'] );
 		$this->assertSame( 'SHIPPING_METHOD_UNAVAILABLE', $result['body']['error']['error'] );
-		$this->assertSame( 'No shipping method is available for this address.', $result['body']['error']['message'] );
+		$this->assertSame( 'We cannot deliver to the selected address with express checkout. Please choose another address or use the regular checkout.', $result['body']['error']['message'] );
 	}
 
 	public function test_unavailable_country_has_its_own_message() {
@@ -263,7 +265,7 @@ class ShippingControllerTest extends TestCase {
 		$result = $this->handle( $this->body( array( 'countryCode' => 'US' ) ) );
 
 		$this->assertSame( 'COUNTRY_UNAVAILABLE', $result['body']['error']['error'] );
-		$this->assertSame( 'We cannot ship to this address.', $result['body']['error']['message'] );
+		$this->assertSame( 'Express checkout is not available for deliveries to US. Please choose another address or use the regular checkout.', $result['body']['error']['message'], 'a country unknown to WooCommerce is shown by its code' );
 	}
 
 	public function test_lower_case_country_is_accepted_and_passed_on_upper_case() {
@@ -410,7 +412,8 @@ class ShippingControllerTest extends TestCase {
 		$this->assertSame( 200, $result['status'] );
 		$this->assertSame( array(), $result['body']['shippingOptions'] );
 		$this->assertSame( 'COUNTRY_UNAVAILABLE', $result['body']['error']['error'] );
-		$this->assertSame( 'Express checkout is not available for this destination. Please use the regular checkout.', $result['body']['error']['message'] );
+		$this->assertSame( 'Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout.', $result['body']['error']['message'] );
+		$this->assertStringNotContainsString( 'charged', $result['body']['error']['message'] );
 		$this->assertSame( array(), $this->quote_writes(), 'no quote stored' );
 	}
 

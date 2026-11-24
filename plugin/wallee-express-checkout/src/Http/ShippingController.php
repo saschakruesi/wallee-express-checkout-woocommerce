@@ -197,7 +197,7 @@ final class ShippingController {
 
 			return array(
 				'status' => 200,
-				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, self::destinationNotice() ),
+				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, Notices::walletDestination( $destination['country'] ) ),
 			);
 		}
 
@@ -215,7 +215,7 @@ final class ShippingController {
 
 			return array(
 				'status' => 200,
-				'body'   => ShippingRateMapper::error( $code, self::messageFor( $code ) ),
+				'body'   => ShippingRateMapper::error( $code, self::messageFor( $code, $destination['country'] ) ),
 			);
 		}
 
@@ -264,24 +264,17 @@ final class ShippingController {
 	}
 
 	/**
-	 * Customer-facing message when express checkout cannot serve a destination
-	 * because the prices were taxed for another location.
-	 */
-	public static function destinationNotice(): string {
-		return __( 'Express checkout is not available for this destination. Please use the regular checkout.', 'wallee-express-checkout' );
-	}
-
-	/**
-	 * Customer-facing message for an error code.
+	 * Wallet message for an error code.
 	 *
-	 * @param string $code wallee error code.
+	 * @param string $code    wallee error code.
+	 * @param string $country ISO country code of the destination.
 	 */
-	private static function messageFor( string $code ): string {
+	private static function messageFor( string $code, string $country ): string {
 		if ( ShippingOptionsProvider::ERROR_COUNTRY === $code ) {
-			return __( 'We cannot ship to this address.', 'wallee-express-checkout' );
+			return Notices::walletDestination( $country );
 		}
 
-		return __( 'No shipping method is available for this address.', 'wallee-express-checkout' );
+		return Notices::walletNoShippingMethod();
 	}
 
 	/**

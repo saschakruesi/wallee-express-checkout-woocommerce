@@ -18,6 +18,7 @@ use Wallee\ExpressCheckout\Session\SessionService;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
 use Wallee\ExpressCheckout\Tests\Support\FakeOrderService;
 use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
+use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 /**
@@ -31,6 +32,9 @@ class ReturnHandlerTest extends TestCase {
 	const WALLEE   = 'https://app-wallee.com/s/4711/payment/chargeattempt/redirect/1?securityToken=t';
 	const RECEIVED = 'https://shop.test/checkout/order-received/501/?key=wc_order_k';
 	const TEST_NOTE = 'Test payment (wallee Express Checkout TEST environment). No real money was moved.';
+	const NOT_CHARGED = 'You have not been charged.';
+	const RELEASED    = 'If an amount was reserved, it will be released.';
+	const TECHNICAL   = 'The express payment could not be completed because of a technical problem.';
 	const PAID_NOTICE = 'Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order 501.';
 
 	/** @var FakeSessionRepository */
@@ -60,6 +64,9 @@ class ReturnHandlerTest extends TestCase {
 	/** @var string Host of the configured wallee base URL. */
 	private $wallee_host = 'app-wallee.com';
 
+	/** @var FakeWc */
+	private $wc;
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
@@ -73,6 +80,8 @@ class ReturnHandlerTest extends TestCase {
 		);
 		Functions\when( 'wp_parse_url' )->alias( 'parse_url' );
 		Functions\when( 'wc_get_cart_url' )->justReturn( self::CART );
+		$this->wc = new FakeWc();
+		Functions\when( 'WC' )->justReturn( $this->wc );
 		Functions\when( 'wc_add_notice' )->alias(
 			function ( $message, $type ) {
 				$this->notices[] = $type . ': ' . $message;
@@ -348,7 +357,8 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $url );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
 		$this->assertNothingCreated();
-		$this->assertStringContainsString( 'expired', $this->notices[0] );
+		$this->assertSame( array( 'error: Your express payment session has expired. You have not been charged. Please start the express payment again.' ), $this->notices );
+		$this->assertSame( array( true ), $this->wc->session->cookies, 'a guest gets a session so the notice survives the redirect' );
 	}
 
 	public function test_session_read_error_fails_row() {
@@ -376,7 +386,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'failed', $this->repository->row['state'] );
 		$this->assertNothingCreated();
 		$this->assertCount( 1, $this->notices );
-		$this->assertStringNotContainsString( 'amount_mismatch', $this->notices[0] );
+		$this->assertSame( 'error: Your cart changed while you were paying. You have not been charged. Please review your cart and try again.', $this->notices[0] );
 		$this->assertStringContainsString( 'amount_mismatch', implode( "\n", $this->logs ) );
 	}
 
@@ -522,7 +532,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'failed', $this->repository->row['state'] );
 		$this->assertSame( array(), $this->scheduled );
 		$this->assertNull( $this->handler()->externalHost() );
-		$this->assertSame( array( 'error: Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.' ), $this->notices );
+		$this->assertSame( array( 'error: The wallet did not provide an e-mail address, which we need for your order. You have not been charged. Please use the regular checkout.' ), $this->notices );
 		$this->assertSame( array( self::TEST_NOTE ), $this->orders->orders[501]->notes, 'nothing reserved yet: no portal action needed' );
 	}
 
@@ -679,7 +689,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertFailedBeforePayment( 'coupon_invalid', $handler->handle( $this->query() ) );
 		$this->assertNull( $handler->externalHost() );
 		$this->assertSame( array( 'buyer@example.test' ), $this->orders->coupon_checks );
-		$this->assertStringContainsString( 'coupon', $this->notices[0] );
+		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0] );
 	}
 
 	public function test_a_coupon_failure_with_money_reserved_asks_for_void_or_refund() {
@@ -704,7 +714,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->api->transaction['shippingAddress'] = array( 'country' => 'DE' );
 
 		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
-		$this->assertSame( 'error: Express checkout is not available for this destination. Please use the regular checkout.', $this->notices[0] );
+		$this->assertSame( 'error: Express checkout is not available for deliveries to Germany. You have not been charged. Please use the regular checkout to complete your order.', $this->notices[0] );
 	}
 
 	public function test_the_billing_country_counts_when_there_is_no_shipping_address() {
@@ -906,6 +916,108 @@ class ReturnHandlerTest extends TestCase {
 		$this->orders->orders[501]           = new \WC_Order( 501, 60.11 );
 
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+	}
+	public function test_a_bad_link_tells_the_customer_a_reserved_amount_will_be_released() {
+		$this->handler()->handle( $this->query( str_repeat( '0', 64 ) ) );
+
+		$this->assertSame( array( 'error: ' . self::TECHNICAL . ' ' . self::RELEASED . ' Please try again or use the regular checkout.' ), $this->notices );
+	}
+
+	public function test_an_expired_return_link_says_not_charged_only_for_a_row_never_processed() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 7201 );
+		$this->handler()->handle( $this->query() );
+
+		$this->repository->row['state'] = 'processed';
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame(
+			array(
+				'error: Your express payment session has expired. ' . self::NOT_CHARGED . ' Please start the express payment again.',
+				'error: Your express payment session has expired. ' . self::RELEASED . ' Please start the express payment again.',
+			),
+			$this->notices
+		);
+	}
+
+	public function test_a_failed_row_returned_to_again_gets_the_uncertain_wording() {
+		$this->repository->row['state'] = 'failed';
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: ' . self::TECHNICAL . ' ' . self::RELEASED . ' Please try again or use the regular checkout.' ), $this->notices );
+	}
+
+	public function test_out_of_stock_has_its_own_notice() {
+		$this->orders->stock_reason = 'out_of_stock';
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: An item in your order is no longer available in the requested quantity. You have not been charged. Please review your cart.' ), $this->notices );
+	}
+
+	public function test_a_changed_shipping_option_gets_the_destination_notice_without_a_country() {
+		$options                          = self::approved()['shippingOptions'];
+		$options[0]['id']                 = 'flat_rate:9';
+		$this->api->sessions              = array( self::approved( array( 'shippingOptions' => $options ) ) );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: Express checkout is not available for the selected delivery address. You have not been charged. Please use the regular checkout to complete your order.' ), $this->notices );
+		$this->assertStringContainsString( 'rejected: shipping_changed', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_tax_rate_change_during_order_creation_gets_the_cart_changed_notice() {
+		$this->orders->create_error = new \RuntimeException( 'tax_rate_changed' );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: Your cart changed while you were paying. You have not been charged. Please review your cart and try again.' ), $this->notices );
+	}
+
+	public function test_a_technical_problem_before_process_says_not_charged() {
+		$this->api->sessions = array( new ApiException( 'down', 503 ) );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: ' . self::TECHNICAL . ' ' . self::NOT_CHARGED . ' Please try again or use the regular checkout.' ), $this->notices );
+	}
+
+	public function test_a_failed_process_call_gets_the_uncertain_wording() {
+		$this->api->process = new ApiException( 'refused', 422 );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: ' . self::TECHNICAL . ' ' . self::RELEASED . ' Please try again or use the regular checkout.' ), $this->notices );
+	}
+
+	public function test_a_foreign_host_without_a_readable_transaction_gets_the_uncertain_wording() {
+		$this->api->process     = 'https://wallet.example/done';
+		$this->api->transaction = new ApiException( 'timeout' );
+		$this->api->sessions    = array( self::approved(), array_merge( self::processing(), array( 'state' => 'FAILED' ) ) );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array( 'error: ' . self::TECHNICAL . ' ' . self::RELEASED . ' Please try again or use the regular checkout.' ), $this->notices );
+	}
+
+	public function test_a_destination_change_with_money_taken_tells_the_customer_the_payment_was_received() {
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'DE' );
+		$this->api->transaction['state']           = 'FULFILL';
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
+		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
+	}
+
+	public function test_an_existing_customer_session_is_not_restarted() {
+		$this->wc = new FakeWc( true );
+		Functions\when( 'WC' )->justReturn( $this->wc );
+		$this->orders->stock_reason = 'out_of_stock';
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array(), $this->wc->session->cookies );
+		$this->assertCount( 1, $this->notices );
 	}
 }
 

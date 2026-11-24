@@ -18,7 +18,7 @@ Before starting: WooCommerce > Settings > wallee Express Checkout (own tab, next
 
 ## Shop facts used in the expectations
 
-- Currency CHF. Prices include 8.1 % tax. Taxes are calculated from the shipping address (WooCommerce default) and a guest's location defaults to the shop base, so the tax location of a cart is CH unless the cart's shipping calculator says otherwise. Since 0.1.1 the wallet offers shipping only inside that tax location (design amendment 3): with a CH tax location, DE and other countries get "Express checkout is not available for this destination. Please use the regular checkout."
+- Currency CHF. Prices include 8.1 % tax. Taxes are calculated from the shipping address (WooCommerce default) and a guest's location defaults to the shop base, so the tax location of a cart is CH unless the cart's shipping calculator says otherwise. Since 0.1.1 the wallet offers shipping only inside that tax location (design amendment 3): with a CH tax location, DE and other countries get "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout."
 - Products: Notebook 25.00 (simple), T-Shirt 30.00 (variable, sizes S, M, L), Gift card 50.00 (virtual).
 - Coupon `TEN`: 10 % off the products (not shipping).
 - Shipping: zone CH has flat rate 8.11 incl. tax (7.50 + 0.61 tax) and free shipping from 100.00; zone DE has flat rate 16.22 incl. tax. No zone elsewhere.
@@ -79,7 +79,7 @@ Expect: order is attached to that account (WooCommerce > Orders shows the custom
 
 ### 6. Address without a shipping method
 Steps: Notebook in the cart. In the wallet sheet choose or enter a shipping address in a country without a zone (for example France). If Bogus Pay offers no address choice, record "not testable" and the reason.
-Expect: the sheet reports that shipping is not available to that address (the add-on answers `COUNTRY_UNAVAILABLE`) and cannot be approved; switching to a CH address makes the options appear again. A DE address is also refused while the cart's tax location is CH (see case 23). No order is created while the address is unsupported.
+Expect: the sheet shows "Express checkout is not available for deliveries to France. Please choose another address or use the regular checkout." (the add-on answers `COUNTRY_UNAVAILABLE`) and cannot be approved; a country inside a zone but without a shipping method gets "We cannot deliver to the selected address with express checkout. Please choose another address or use the regular checkout." (`SHIPPING_METHOD_UNAVAILABLE`); switching to a CH address makes the options appear again. A DE address is also refused while the cart's tax location is CH (see case 23). No order is created while the address is unsupported.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -87,7 +87,7 @@ Expect: the sheet reports that shipping is not available to that address (the ad
 
 ### 7. Failed payment
 Steps: Notebook, wallet button, approve, and in the 3-D Secure simulation (or Bogus Pay) choose the failing outcome.
-Expect: browser returns to the cart page with a notice "The payment was not completed." The cart still contains the Notebook. Admin: the order exists with status `Failed`. No charge. Pressing the wallet button again works.
+Expect: browser returns to the cart page with the notice "The payment was not completed. You have not been charged. Please try again or choose another payment method." The cart still contains the Notebook. Admin: the order exists with status `Failed`. No charge. Pressing the wallet button again works.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -151,7 +151,7 @@ Expect: admin notice that the add-on is inactive and what is missing; no buttons
 
 ### 15. Stock drops to 0 after the sheet opened
 Steps: Notebook with stock management on and stock 5. Open the cart, click the wallet button so the sheet is open. In another browser or tab set the Notebook's stock to 0. Approve in the sheet.
-Expect: browser returns to the cart with an error notice; no order for this attempt; no charge (no transaction created in the wallee portal). Log: `rejected: out_of_stock`. Restore the stock afterwards.
+Expect: browser returns to the cart with the notice "An item in your order is no longer available in the requested quantity. You have not been charged. Please review your cart."; no order for this attempt; no charge (no transaction created in the wallee portal). Log: `rejected: out_of_stock`. Restore the stock afterwards.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -159,7 +159,7 @@ Expect: browser returns to the cart with an error notice; no order for this atte
 
 ### 16. Coupon with an e-mail restriction
 Steps: create coupon `MAILONLY` (10 %). (a) "Allowed emails" set to the e-mail Bogus Pay returns (read it from an earlier Bogus Pay order) or its domain with a wildcard (`*@domain`). Add Notebook, apply `MAILONLY` (as a logged-out guest the cart may refuse it: log in with an account whose e-mail is allowed so the cart accepts it). Wallet button, standard approval. (b) The same with "Allowed emails" set to an address the wallet does not return.
-Expect: (a) the order succeeds with the coupon. (b) after approval the browser returns to the cart with a notice that a coupon cannot be used; the order is `Failed` with reason `coupon_invalid`; the customer is not sent to the payment step. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
+Expect: (a) the order succeeds with the coupon. (b) after approval the browser returns to the cart with the notice "The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout." (if the transaction was already authorised: "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."); the order is `Failed` with reason `coupon_invalid`; the customer is not sent to the payment step. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -191,7 +191,7 @@ Expect: the order is linked by the background job (WooCommerce > Status > Schedu
 
 ### 20. No e-mail from the wallet
 Steps: only testable with a wallet that returns no e-mail address (Bogus Pay always returns one: then record "not testable").
-Expect: after approval the customer returns to the cart with the notice that the wallet did not provide an e-mail address; the order is `Failed` with reason `no_email`; the customer is not sent to the payment step. If the transaction was already authorised, the order has an "ACTION REQUIRED" note and the log an error naming the transaction to void or refund in the wallee portal.
+Expect: after approval the customer returns to the cart with the notice "The wallet did not provide an e-mail address, which we need for your order. You have not been charged. Please use the regular checkout." (if the transaction was already authorised, completed or fulfilled: "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."); the order is `Failed` with reason `no_email`; the customer is not sent to the payment step. If the transaction was already authorised, the order has an "ACTION REQUIRED" note and the log an error naming the transaction to void or refund in the wallee portal.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -215,7 +215,7 @@ Expect: a yellow notice on every admin page, without a dismiss button: "wallee E
 
 ### 23. Destination country different from the tax country
 Steps: logged out, empty cart (tax location CH). Add Notebook, wallet button, and in the sheet choose or enter a DE shipping address. If Bogus Pay offers no address choice, record "not testable".
-Expect: no shipping option is offered for the DE address; the sheet shows "Express checkout is not available for this destination. Please use the regular checkout." and cannot be approved. Log: `destination outside the tax location`. A CH address works as in case 1.
+Expect: no shipping option is offered for the DE address; the sheet shows "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout." and cannot be approved. Log: `destination outside the tax location`. A CH address works as in case 1.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -223,7 +223,7 @@ Expect: no shipping option is offered for the DE address; the sheet shows "Expre
 
 ### 24. Coupon with a usage limit per user, used twice as a guest
 Steps: create coupon `ONCE` (10 %, Usage limit per user = 1). Logged out: add Notebook, apply `ONCE`, standard approval; wait until the order is `On hold` or `Processing`. Then, again logged out and with the same wallet (same e-mail): add Notebook, apply `ONCE`, standard approval.
-Expect: the first order succeeds with the coupon. The second returns to the cart after approval with a notice that a coupon cannot be used; its order is `Failed` with reason `coupon_invalid`; no payment step, no charge. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
+Expect: the first order succeeds with the coupon. The second returns to the cart after approval with the coupon notice of case 16; its order is `Failed` with reason `coupon_invalid`; no payment step, no charge. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -231,7 +231,7 @@ Expect: the first order succeeds with the coupon. The second returns to the cart
 
 ### 25. Return link older than 2 hours
 Steps: complete case 1 and note the return URL (`...?wc-api=wallee_ec_return&ec_session=...&sig=...`, visible in the browser history before the 3-D Secure step). Open it again more than 2 hours after the wallet session was created.
-Expect: the cart page with the generic notice "Your express payment could not be completed..."; not the order-received page; no second order. Log: `too old for its return link`.
+Expect: the cart page with the notice "Your express payment session has expired. If an amount was reserved, it will be released. Please start the express payment again." (the row was processed, so the add-on does not claim nothing was charged); not the order-received page; no second order. Log: `too old for its return link`.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -260,6 +260,14 @@ Reason codes after `rejected:` (no order, no charge) or `failed:` (order set to 
 | `process_failed (Class HTTP n ...)` | wallee refused the `process` call (4xx), or the answer was unclear and the session did not move after one retry (order failed). An unclear answer with the session already `PROCESSING`/`AUTHORIZED` is logged as `probably processed` and the order is kept. |
 | `order_update_failed (Class)` | The order could not be marked before the process call (order failed). |
 | `no_email` | After process, wallee returned no e-mail address (order failed; see case 20). |
+| `destination_changed` | After process, the wallet's address is in another country than the shipping quote or the tax location (order failed). |
+| `coupon_check_failed` | After process, the coupon check threw an error: order failed unless the money is already reserved or taken, then kept. |
+| `redirect_host_unexpected` | wallee's redirect after process points to a host that is neither wallee nor the shop. The customer is never sent there; the order is kept and the customer goes to the success page when the transaction or session shows a payment under way or done, otherwise the order fails. |
+| `... but transaction T is STATE; order kept` | A technical reason after process with the money already reserved or taken: the order is never failed for it. |
+
+Each return logs `redirect target: wallee`, `shop` or `other:<host>` (host only).
+
+Customer notices (cart page) by reason: expired session or link: "Your express payment session has expired. ..."; destination (`shipping_missing`, `shipping_changed`, `destination_changed`): "Express checkout is not available for deliveries to <country>. ..." or "... for the selected delivery address. ..."; `out_of_stock`; `coupon_invalid`; cart changed (`amount_mismatch`, `tax_rate_changed`, `order_creation_failed`, `currency_mismatch`, rounding): "Your cart changed while you were paying. ..."; `no_email`; failure URL: "The payment was not completed. ..."; anything else: "The express payment could not be completed because of a technical problem. ...". The middle sentence is "You have not been charged." only where no payment can have happened; where that is not certain it is "If an amount was reserved, it will be released." With the money already reserved or taken the notice is "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."
 
 Session endpoint refusals (`reason` in the response, no buttons): `disabled`, `not_configured` (main plugin not configured or SDK shim unavailable), `empty`, `no_shipping_needed`, `subscription`, `multiple_packages`, `guest_checkout_disabled`, `unavailable` (snapshot not buildable; logged as `total_mismatch` or `rounding_mismatch` when the amounts would not add up to the cart total).
 

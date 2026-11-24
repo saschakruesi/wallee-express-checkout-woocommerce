@@ -224,21 +224,22 @@ final class ReturnHandler {
 		if ( '' === $uuid || ! $this->signer->verify( $uuid, SessionService::PURPOSE_RETURN, $sig ) ) {
 			$this->log( 'Return: invalid or missing signature.', 'warning' );
 
-			return $this->toCart();
+			return $this->toCart( Notices::forReason( 'invalid_link', Notices::CHARGE_UNKNOWN ) );
 		}
 
 		$record = $this->repository->findByUuid( $uuid );
 		if ( null === $record ) {
 			$this->log( 'Return: unknown session.', 'warning' );
 
-			return $this->toCart();
+			return $this->toCart( Notices::forReason( 'unknown_session', Notices::CHARGE_UNKNOWN ) );
 		}
 		$this->log( sprintf( 'Return: session row %d in state %s.', $record->id(), $record->state() ) );
 
 		if ( $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
 			$this->log( sprintf( 'Return: session row %d is too old for its return link.', $record->id() ), 'warning' );
 
-			return $this->toCart();
+			// Only a row still `created` is known to have had no payment started.
+			return $this->toCart( Notices::forReason( Notices::LINK_EXPIRED, SessionRecord::CREATED === $record->state() ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN ) );
 		}
 
 		if ( SessionRecord::CREATED !== $record->state() ) {
@@ -248,7 +249,7 @@ final class ReturnHandler {
 			$current = $this->repository->findByUuid( $uuid );
 			$this->log( sprintf( 'Return: session row %d claimed by another request (now %s).', $record->id(), null === $current ? 'gone' : $current->state() ) );
 
-			return null === $current ? $this->toCart() : $this->settled( $current );
+			return null === $current ? $this->toCart( Notices::forReason( 'session_gone', Notices::CHARGE_UNKNOWN ) ) : $this->settled( $current );
 		}
 		$this->log( sprintf( 'Return: session row %d created -> ordering.', $record->id() ) );
 
@@ -278,7 +279,7 @@ final class ReturnHandler {
 		if ( ! isset( $session['state'] ) || 'APPROVED' !== $session['state'] ) {
 			$state = isset( $session['state'] ) && is_string( $session['state'] ) ? preg_replace( '/[^A-Z_]/', '', $session['state'] ) : 'none';
 
-			return $this->reject( $record, OrderValidator::NOT_APPROVED . ' (' . $state . ')', __( 'Your express payment has expired. Please try again.', 'wallee-express-checkout' ) );
+			return $this->reject( $record, OrderValidator::NOT_APPROVED . ' (' . $state . ')' );
 		}
 		if ( ! self::sameId( isset( $session['linkedSpaceId'] ) ? $session['linkedSpaceId'] : null, $record->spaceId() ) ) {
 			return $this->reject( $record, 'space_mismatch' );
@@ -346,7 +347,8 @@ final class ReturnHandler {
 
 		$outcome = $this->process( $record, $order );
 		if ( self::PROCESS_FAILED === $outcome[0] ) {
-			return $this->failOrder( $record, $order, 'process_failed', $outcome[1] );
+			// Not every refusal proves that nothing was reserved.
+			return $this->failOrder( $record, $order, 'process_failed', $outcome[1], Notices::CHARGE_UNKNOWN );
 		}
 		$this->log( sprintf( 'Return: session row %d wallee session %d %s for order %d.', $record->id(), $record->walleeSessionId(), self::PROCESS_DONE === $outcome[0] ? 'processed' : 'probably processed', $order->get_id() ) );
 
@@ -443,13 +445,13 @@ final class ReturnHandler {
 			if ( null !== $collected ) {
 				$failure = $this->customerFailure( $record, $order, $collected['email'] );
 				if ( null !== $failure ) {
-					return $this->failAfterProcess( $record, $order, $failure[0], $failure[1], $transaction_id, $state );
+					return $this->failAfterProcess( $record, $order, $failure, $transaction_id, $state );
 				}
 			}
 
 			return $this->forward( $record, $order, $redirect, $transaction_id, $state );
 		} catch ( \Throwable $e ) {
-			return $this->failAfterProcess( $record, $order, 'after_process_error (' . get_class( $e ) . ')', Redirects::genericNotice(), $transaction_id, $state );
+			return $this->failAfterProcess( $record, $order, 'after_process_error (' . get_class( $e ) . ')', $transaction_id, $state );
 		}
 	}
 
@@ -508,7 +510,7 @@ final class ReturnHandler {
 			return $this->successUrl( $record );
 		}
 
-		return $this->failAfterProcess( $record, $order, 'redirect_host_unexpected', Redirects::genericNotice(), $transaction_id, $state );
+		return $this->failAfterProcess( $record, $order, 'redirect_host_unexpected', $transaction_id, $state );
 	}
 
 	/**
@@ -588,11 +590,11 @@ final class ReturnHandler {
 	 * @param SessionRecord $record    Row.
 	 * @param \WC_Order     $order     Order with the customer data applied.
 	 * @param bool          $has_email Whether the order has an e-mail address.
-	 * @return array{0: string, 1: string}|null Reason code and customer notice, null if the order may be paid.
+	 * @return string|null Reason code, null if the order may be paid.
 	 */
-	private function customerFailure( SessionRecord $record, \WC_Order $order, bool $has_email ): ?array {
+	private function customerFailure( SessionRecord $record, \WC_Order $order, bool $has_email ): ?string {
 		if ( ! $has_email ) {
-			return array( 'no_email', __( 'Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.', 'wallee-express-checkout' ) );
+			return 'no_email';
 		}
 
 		$snapshot = $record->snapshot();
@@ -601,18 +603,14 @@ final class ReturnHandler {
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: order %d: coupon check failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
 
-			return array( 'coupon_check_failed', Redirects::genericNotice() );
+			return 'coupon_check_failed';
 		}
 		if ( null !== $reason ) {
-			return array( OrderValidator::COUPON_INVALID, __( 'A coupon in your cart cannot be used for this order, so the order was not placed. Please check your cart or use the regular checkout.', 'wallee-express-checkout' ) );
+			return OrderValidator::COUPON_INVALID;
 		}
 
-		$country = (string) $order->get_shipping_country();
-		if ( '' === $country ) {
-			$country = (string) $order->get_billing_country();
-		}
-		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), $country, $this->tax_follows_address ) ) {
-			return array( OrderValidator::DESTINATION_CHANGED, ShippingController::destinationNotice() );
+		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $this->tax_follows_address ) ) {
+			return OrderValidator::DESTINATION_CHANGED;
 		}
 
 		return null;
@@ -629,16 +627,18 @@ final class ReturnHandler {
 	 * success result URL.
 	 *
 	 * Otherwise the order must not go on to wallee's payment step: order
-	 * `failed`, row `failed`, cart with a notice.
+	 * `failed`, row `failed`, cart with a notice. The notice says the
+	 * customer was not charged only if the transaction was read and is in no
+	 * money-moved state; if it was not read, it says that a reserved amount
+	 * will be released.
 	 *
 	 * @param SessionRecord $record         Row.
 	 * @param \WC_Order     $order          Order.
 	 * @param string        $reason         Reason code (order note and log).
-	 * @param string        $notice         Customer notice when nothing was taken.
 	 * @param int           $transaction_id wallee transaction ID, 0 if unknown.
 	 * @param string        $state          Transaction state, '' if unknown.
 	 */
-	private function failAfterProcess( SessionRecord $record, \WC_Order $order, string $reason, string $notice, int $transaction_id, string $state ): string {
+	private function failAfterProcess( SessionRecord $record, \WC_Order $order, string $reason, int $transaction_id, string $state ): string {
 		$paid = $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true );
 		if ( $paid && ! in_array( $reason, self::FAIL_EVEN_IF_PAID, true ) ) {
 			$this->log( sprintf( 'Return: session row %d order %d: %s, but transaction %d is %s; order kept, success result URL.', $record->id(), $order->get_id(), $reason, $transaction_id, $state ), 'warning' );
@@ -667,20 +667,22 @@ final class ReturnHandler {
 		}
 		$this->markFailed( $record );
 
-		return $this->toCart( $paid ? self::paymentTakenNotice( $order ) : $notice );
+		if ( $paid ) {
+			return $this->toCart( Notices::paymentTaken( (string) $order->get_order_number() ) );
+		}
+
+		return $this->toCart( Notices::forReason( $reason, $transaction_id > 0 && '' !== $state ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN, self::orderCountry( $order ) ) );
 	}
 
 	/**
-	 * Notice for a failed order whose money is already reserved or taken.
+	 * Country of the order's delivery address: shipping, else billing.
 	 *
 	 * @param \WC_Order $order Order.
 	 */
-	private static function paymentTakenNotice( \WC_Order $order ): string {
-		return sprintf(
-			/* translators: %s: order number. */
-			__( 'Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order %s.', 'wallee-express-checkout' ),
-			$order->get_order_number()
-		);
+	private static function orderCountry( \WC_Order $order ): string {
+		$country = (string) $order->get_shipping_country();
+
+		return '' === $country ? (string) $order->get_billing_country() : $country;
 	}
 
 	/**
@@ -702,24 +704,25 @@ final class ReturnHandler {
 		$this->log( sprintf( 'Return: session row %d in state %s is not processed again.', $record->id(), $state ) );
 
 		if ( SessionRecord::ORDERING === $state ) {
-			return $this->toCart( __( 'Your express payment is already being processed.', 'wallee-express-checkout' ) );
+			return $this->toCart( Notices::processing() );
 		}
 
-		return $this->toCart();
+		// A failed row may belong to an order whose payment went through.
+		return $this->toCart( Notices::forReason( 'not_processed_again', Notices::CHARGE_UNKNOWN ) );
 	}
 
 	/**
-	 * Steps 3 to 7 failed: row `failed`, no order, no process.
+	 * Steps 3 to 7 failed: row `failed`, no order, no process, so nothing
+	 * was charged.
 	 *
 	 * @param SessionRecord $record Row.
-	 * @param string        $reason Reason code for the log.
-	 * @param string|null   $notice Customer notice, generic when null.
+	 * @param string        $reason Reason code for the log and the notice.
 	 */
-	private function reject( SessionRecord $record, string $reason, ?string $notice = null ): string {
+	private function reject( SessionRecord $record, string $reason ): string {
 		$this->log( sprintf( 'Return: session row %d rejected: %s.', $record->id(), $reason ), 'warning' );
 		$this->markFailed( $record );
 
-		return $this->toCart( $notice );
+		return $this->toCart( Notices::forReason( $reason, Notices::CHARGE_NONE ) );
 	}
 
 	/**
@@ -727,10 +730,11 @@ final class ReturnHandler {
 	 *
 	 * @param SessionRecord $record Row.
 	 * @param \WC_Order     $order  Order.
-	 * @param string        $reason Reason code (goes to the order note and the log).
+	 * @param string        $reason Reason code (goes to the order note, the log and the notice).
 	 * @param string        $detail Exception class, if any.
+	 * @param string        $charge Notices::CHARGE_NONE before the process call, else CHARGE_UNKNOWN.
 	 */
-	private function failOrder( SessionRecord $record, \WC_Order $order, string $reason, string $detail = '' ): string {
+	private function failOrder( SessionRecord $record, \WC_Order $order, string $reason, string $detail = '', string $charge = Notices::CHARGE_NONE ): string {
 		$this->log( sprintf( 'Return: session row %d order %d failed: %s%s.', $record->id(), $order->get_id(), $reason, '' === $detail ? '' : ' (' . $detail . ')' ), 'error' );
 		try {
 			$this->orders->fail( $order, $reason );
@@ -739,7 +743,7 @@ final class ReturnHandler {
 		}
 		$this->markFailed( $record );
 
-		return $this->toCart();
+		return $this->toCart( Notices::forReason( $reason, $charge ) );
 	}
 
 	/**
@@ -759,10 +763,10 @@ final class ReturnHandler {
 	/**
 	 * Cart URL, with an error notice.
 	 *
-	 * @param string|null $notice Notice, generic when null.
+	 * @param string $notice Notice.
 	 */
-	private function toCart( ?string $notice = null ): string {
-		wc_add_notice( null === $notice ? Redirects::genericNotice() : $notice, 'error' );
+	private function toCart( string $notice ): string {
+		Notices::add( $notice );
 
 		return wc_get_cart_url();
 	}
