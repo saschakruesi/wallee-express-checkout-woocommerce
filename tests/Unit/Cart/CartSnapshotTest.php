@@ -190,4 +190,21 @@ class CartSnapshotTest extends TestCase {
 		$this->expectException( \InvalidArgumentException::class );
 		CartSnapshot::fromArray( self::data( array( 'shipping_package_count' => -1 ) ) );
 	}
+
+	public function test_total_is_rounded_to_currency_decimals() {
+		$item = self::item( array( 'line_total' => 0.1, 'line_tax' => 0.2 ) );
+		$s    = CartSnapshot::fromArray( self::data( array( 'items' => array( $item ), 'fees' => array() ) ) );
+
+		$this->assertSame( 0.3, $s->total() );
+
+		$yen = CartSnapshot::fromArray( self::data( array( 'currency' => 'JPY', 'items' => array( self::item( array( 'line_total' => 1000.4, 'line_tax' => 0.2 ) ) ), 'fees' => array() ) ) );
+		$this->assertSame( 1001.0, $yen->total() );
+	}
+
+	public function test_hash_throws_when_json_encoding_fails() {
+		$s = CartSnapshot::fromArray( self::data( array( 'items' => array( self::item( array( 'name' => "\xB1\x31" ) ) ) ) ) );
+
+		$this->expectException( \RuntimeException::class );
+		$s->hash();
+	}
 }

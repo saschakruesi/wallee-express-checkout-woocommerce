@@ -31,19 +31,24 @@ final class SnapshotFactory {
 	}
 
 	/**
-	 * Snapshot of a single product purchase, priced in a throwaway cart.
+	 * Snapshot of a single product purchase.
 	 *
-	 * The throwaway cart is never the session cart and is never persisted.
+	 * The line is priced directly with WooCommerce's price helpers for the
+	 * current customer. No cart object is created and no cart hook runs, so
+	 * the customer's cart and session are not touched.
 	 *
 	 * @param int   $product_id   Product ID (the parent for variations).
 	 * @param int   $variation_id Variation ID, 0 for none.
-	 * @param array $variation   Variation attributes, attribute_* => value.
-	 * @param int   $quantity    Quantity.
+	 * @param array $variation    Variation attributes, attribute_* => value.
+	 * @param int   $quantity     Quantity.
 	 * @throws \InvalidArgumentException If the product cannot be bought like this.
 	 */
 	public function fromProduct( int $product_id, int $variation_id, array $variation, int $quantity ): CartSnapshot {
 		if ( $quantity < 1 ) {
 			throw new \InvalidArgumentException( 'Quantity must be at least 1.' );
+		}
+		if ( ! WC()->customer ) {
+			throw new \InvalidArgumentException( 'No customer available to price the product.' );
 		}
 
 		$product = wc_get_product( $product_id );
@@ -77,21 +82,37 @@ final class SnapshotFactory {
 			throw new \InvalidArgumentException( 'Product can only be bought once.' );
 		}
 
+		$decimals  = Money::decimals( get_woocommerce_currency() );
+		$excl      = Money::round( wc_get_price_excluding_tax( $buyable, array( 'qty' => $quantity ) ), $decimals );
+		$incl      = Money::round( wc_get_price_including_tax( $buyable, array( 'qty' => $quantity ) ), $decimals );
+		$tax       = Money::round( $incl - $excl, $decimals );
+		$tax_class = (string) $buyable->get_tax_class();
+		$shipping  = (bool) $buyable->needs_shipping();
+
 		$attributes = array();
 		foreach ( $variation as $name => $value ) {
 			$attributes[ sanitize_title( (string) $name ) ] = (string) $value;
 		}
 
-		$cart = new \WC_Cart();
-		$this->detach_cart_hooks( $cart );
+		$item = array(
+			'key'               => md5( $product_id . ':' . $variation_id . ':' . wp_json_encode( $attributes ) ),
+			'product_id'        => $product_id,
+			'variation_id'      => $variation_id,
+			'variation'         => $attributes,
+			'name'              => $buyable->get_name(),
+			'sku'               => (string) $buyable->get_sku(),
+			'quantity'          => $quantity,
+			'line_subtotal'     => $excl,
+			'line_subtotal_tax' => $tax,
+			'line_total'        => $excl,
+			'line_tax'          => $tax,
+			'tax_class'         => $tax_class,
+			'tax_rates'         => $this->rates_for( $buyable ),
+			'needs_shipping'    => $shipping,
+			'is_subscription'   => $this->is_subscription( $buyable ),
+		);
 
-		$key = $cart->add_to_cart( $product_id, $quantity, $variation_id, $attributes );
-		if ( false === $key ) {
-			throw new \InvalidArgumentException( 'Product could not be priced.' );
-		}
-		$cart->calculate_totals();
-
-		return $this->build( $cart, CartSnapshot::CONTEXT_PRODUCT, $cart->needs_shipping() ? 1 : 0 );
+		return $this->assemble( CartSnapshot::CONTEXT_PRODUCT, array( $item ), array(), array(), $shipping ? 1 : 0 );
 	}
 
 	/**
@@ -103,10 +124,7 @@ final class SnapshotFactory {
 	 * @throws \InvalidArgumentException If the snapshot data is invalid.
 	 */
 	private function build( \WC_Cart $cart, string $context, int $package_count ): CartSnapshot {
-		$currency = get_woocommerce_currency();
-		$decimals = Money::decimals( $currency );
-
-		$address = WC()->customer->get_taxable_address();
+		$decimals = Money::decimals( get_woocommerce_currency() );
 
 		$items = array();
 		foreach ( $cart->get_cart() as $key => $values ) {
@@ -128,9 +146,9 @@ final class SnapshotFactory {
 				'line_total'        => Money::round( $values['line_total'], $decimals ),
 				'line_tax'          => Money::round( $values['line_tax'], $decimals ),
 				'tax_class'         => (string) $product->get_tax_class(),
-				'tax_rates'         => $product->is_taxable() ? $this->tax_rates( (string) $product->get_tax_class() ) : array(),
+				'tax_rates'         => $this->rates_for( $product ),
 				'needs_shipping'    => (bool) $product->needs_shipping(),
-				'is_subscription'   => class_exists( 'WC_Subscriptions_Product' ) && \WC_Subscriptions_Product::is_subscription( $product ),
+				'is_subscription'   => $this->is_subscription( $product ),
 			);
 		}
 
@@ -145,10 +163,28 @@ final class SnapshotFactory {
 			);
 		}
 
+		$coupons = array_values( array_map( 'strval', $cart->get_applied_coupons() ) );
+
+		return $this->assemble( $context, $items, $fees, $coupons, $package_count );
+	}
+
+	/**
+	 * Wraps items, fees and the customer's facts into a snapshot.
+	 *
+	 * @param string $context       Snapshot context.
+	 * @param array  $items         Items.
+	 * @param array  $fees          Fees.
+	 * @param array  $coupons       Coupon codes.
+	 * @param int    $package_count Number of shipping packages.
+	 * @throws \InvalidArgumentException If the snapshot data is invalid.
+	 */
+	private function assemble( string $context, array $items, array $fees, array $coupons, int $package_count ): CartSnapshot {
+		$address = WC()->customer->get_taxable_address();
+
 		return CartSnapshot::fromArray(
 			array(
 				'context'                => $context,
-				'currency'               => $currency,
+				'currency'               => get_woocommerce_currency(),
 				'customer_id'            => (int) get_current_user_id(),
 				'prices_include_tax'     => (bool) wc_prices_include_tax(),
 				'tax_location'           => array(
@@ -159,10 +195,32 @@ final class SnapshotFactory {
 				),
 				'items'                  => $items,
 				'fees'                   => $fees,
-				'coupons'                => CartSnapshot::CONTEXT_CART === $context ? array_values( array_map( 'strval', $cart->get_applied_coupons() ) ) : array(),
+				'coupons'                => $coupons,
 				'shipping_package_count' => $package_count,
 			)
 		);
+	}
+
+	/**
+	 * Tax rates that apply to a product for the current customer.
+	 *
+	 * @param \WC_Product $product Product.
+	 */
+	private function rates_for( \WC_Product $product ): array {
+		if ( ! wc_tax_enabled() || ! $product->is_taxable() ) {
+			return array();
+		}
+
+		return $this->tax_rates( (string) $product->get_tax_class() );
+	}
+
+	/**
+	 * Whether a product is a subscription product.
+	 *
+	 * @param \WC_Product $product Product.
+	 */
+	private function is_subscription( \WC_Product $product ): bool {
+		return class_exists( 'WC_Subscriptions_Product' ) && \WC_Subscriptions_Product::is_subscription( $product );
 	}
 
 	/**
@@ -172,7 +230,7 @@ final class SnapshotFactory {
 	 */
 	private function tax_rates( string $tax_class ): array {
 		$rates = array();
-		foreach ( \WC_Tax::get_rates( $tax_class ) as $rate ) {
+		foreach ( \WC_Tax::get_rates( $tax_class, WC()->customer ) as $rate ) {
 			$rates[] = array(
 				'label' => (string) $rate['label'],
 				'rate'  => (float) $rate['rate'],
@@ -180,40 +238,5 @@ final class SnapshotFactory {
 		}
 
 		return $rates;
-	}
-
-	/**
-	 * Removes every hook a fresh WC_Cart registers on construction.
-	 *
-	 * The cart's session helper listens to cart events and would otherwise
-	 * write the throwaway cart into the customer's session and saved cart.
-	 *
-	 * @param \WC_Cart $cart Throwaway cart.
-	 */
-	private function detach_cart_hooks( \WC_Cart $cart ): void {
-		$owners = array( $cart );
-
-		// The session helper is a private member of the cart.
-		$property = new \ReflectionProperty( \WC_Cart::class, 'session' );
-		$property->setAccessible( true );
-		$session = $property->getValue( $cart );
-		if ( is_object( $session ) ) {
-			$owners[] = $session;
-		}
-
-		global $wp_filter;
-		foreach ( $wp_filter as $tag => $hook ) {
-			if ( ! $hook instanceof \WP_Hook ) {
-				continue;
-			}
-			foreach ( $hook->callbacks as $priority => $callbacks ) {
-				foreach ( $callbacks as $callback ) {
-					$function = $callback['function'];
-					if ( is_array( $function ) && isset( $function[0] ) && in_array( $function[0], $owners, true ) ) {
-						remove_filter( $tag, $function, $priority );
-					}
-				}
-			}
-		}
 	}
 }

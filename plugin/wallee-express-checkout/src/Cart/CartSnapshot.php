@@ -7,6 +7,8 @@
 
 namespace Wallee\ExpressCheckout\Cart;
 
+use Wallee\ExpressCheckout\Support\Money;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -226,7 +228,7 @@ final class CartSnapshot {
 			$total += $fee['total'] + $fee['tax'];
 		}
 
-		return $total;
+		return Money::round( $total, Money::decimals( $this->currency ) );
 	}
 
 	/**
@@ -244,9 +246,16 @@ final class CartSnapshot {
 
 	/**
 	 * SHA-256 of the canonical JSON, independent of array key order.
+	 *
+	 * @throws \RuntimeException If the data cannot be encoded as JSON.
 	 */
 	public function hash(): string {
-		return hash( 'sha256', (string) json_encode( self::canonical( $this->toArray() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- Pure class, no WordPress available.
+		$json = json_encode( self::canonical( $this->toArray() ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- Pure class, no WordPress available.
+		if ( false === $json ) {
+			throw new \RuntimeException( 'Snapshot could not be encoded to JSON.' );
+		}
+
+		return hash( 'sha256', $json );
 	}
 
 	/**
