@@ -34,7 +34,7 @@ and the design disagree, this file wins. Facts come from
    would work, and repeated failures can get the space's webhook listener
    deactivated, which would also hit normal orders.
 
-## Decision on fact 6 (author's call, to be confirmed by the owner)
+## Decision on fact 6 (author's call, confirmed by the owner on 2026-11-24)
 
 The add-on ships a **compatibility shim**: before the main plugin's SDK
 autoloader can load `\Wallee\Sdk\Model\TransactionUserInterfaceType`, the
