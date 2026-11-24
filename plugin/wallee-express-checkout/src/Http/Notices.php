@@ -44,6 +44,12 @@ final class Notices {
 	const LINK_EXPIRED = 'link_expired';
 
 	/**
+	 * Reason code when express checkout cannot run (main plugin unusable or
+	 * SDK compatibility shim unavailable).
+	 */
+	const UNAVAILABLE = 'express_unavailable';
+
+	/**
 	 * Reason code for the result handler's failure URL.
 	 */
 	const PAYMENT_NOT_COMPLETED = 'payment_not_completed';
@@ -59,6 +65,7 @@ final class Notices {
 		'cart'        => array( 'amount_mismatch', 'tax_rate_changed', 'order_creation_failed', 'currency_mismatch', 'rounding', 'rounding_mismatch' ),
 		'email'       => array( 'no_email' ),
 		'payment'     => array( self::PAYMENT_NOT_COMPLETED ),
+		'unavailable' => array( self::UNAVAILABLE ),
 	);
 
 	/**
@@ -111,6 +118,10 @@ final class Notices {
 			case 'payment':
 				$lead   = __( 'The payment was not completed.', 'wallee-express-checkout' );
 				$action = __( 'Please try again or choose another payment method.', 'wallee-express-checkout' );
+				break;
+			case 'unavailable':
+				$lead   = __( 'Express checkout is currently not available.', 'wallee-express-checkout' );
+				$action = __( 'Please use the regular checkout.', 'wallee-express-checkout' );
 				break;
 			default:
 				$lead   = __( 'The express payment could not be completed because of a technical problem.', 'wallee-express-checkout' );

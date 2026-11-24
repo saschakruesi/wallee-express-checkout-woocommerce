@@ -153,6 +153,13 @@ final class ReturnHandler {
 	private $settlement;
 
 	/**
+	 * Whether express checkout may run: function (): bool (Plugin::isActive()).
+	 *
+	 * @var callable
+	 */
+	private $available;
+
+	/**
 	 * Host of the wallee redirect URL returned by the last handle() call.
 	 *
 	 * @var string|null
@@ -173,8 +180,10 @@ final class ReturnHandler {
 	 * @param string                $wallee_host   Host of the configured wallee base URL.
 	 * @param bool                  $tax_follows   Whether WooCommerce taxes by the customer's address.
 	 * @param FailedOrderSettlement $settlement    Settles the money of an order failed for an owner-decided reason.
+	 * @param callable              $available     Whether express checkout may run: function (): bool. False when the
+	 *                                             main plugin is unusable or the SDK compatibility shim is unavailable.
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log, string $environment, string $wallee_host, bool $tax_follows, FailedOrderSettlement $settlement ) {
+	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log, string $environment, string $wallee_host, bool $tax_follows, FailedOrderSettlement $settlement, callable $available ) {
 		$this->repository          = $repository;
 		$this->signer              = $signer;
 		$this->api                 = $api;
@@ -186,6 +195,7 @@ final class ReturnHandler {
 		$this->wallee_host         = strtolower( $wallee_host );
 		$this->tax_follows_address = $tax_follows;
 		$this->settlement          = $settlement;
+		$this->available           = $available;
 	}
 
 	/**
@@ -214,7 +224,8 @@ final class ReturnHandler {
 					Plugin::settings()->environment(),
 					is_string( $host ) ? $host : '',
 					$tax_follows,
-					new FailedOrderSettlement( $api, $log )
+					new FailedOrderSettlement( $api, $log ),
+					array( Plugin::class, 'isActive' )
 				);
 
 				$url = $handler->handle( Redirects::query( array( 'ec_session', 'sig' ) ) );
@@ -238,6 +249,15 @@ final class ReturnHandler {
 			$this->log( 'Return: invalid or missing signature.', 'warning' );
 
 			return $this->toCart( Notices::forReason( 'invalid_link', Notices::CHARGE_UNKNOWN ) );
+		}
+
+		// Without the SDK shim the main plugin cannot read the transaction this
+		// return would start (its webhooks would fail): nothing is claimed,
+		// created or sent to wallee.
+		if ( ! call_user_func( $this->available ) ) {
+			$this->log( 'Return: express checkout is not available (main plugin or SDK compatibility shim); session not processed.', 'warning' );
+
+			return $this->toCart( Notices::forReason( Notices::UNAVAILABLE, Notices::CHARGE_NONE ) );
 		}
 
 		$record = $this->repository->findByUuid( $uuid );
@@ -373,8 +393,15 @@ final class ReturnHandler {
 	 * the session (no HTTP status, 5xx, an unusable response) is followed by
 	 * one session read: a session that reached wallee's payment step is
 	 * `maybe processed`; a session still `APPROVED` gets one more process
-	 * call (`merchantReference` is idempotent). Only a clear refusal (4xx) or
-	 * a session that did not move after the retry fails.
+	 * call (`merchantReference` is idempotent). Only a clear refusal (4xx) of
+	 * the first call or a session that did not move after the retry fails.
+	 *
+	 * A 4xx answer to the retry can mean that the first, unclear call went
+	 * through after all (the session is already processed). It is told apart
+	 * from a real refusal by reading the session once more: a session with a
+	 * linked transaction or in PROCESSING or AUTHORIZED was processed, so the
+	 * order goes on as `maybe processed`; a session still APPROVED (or in any
+	 * other state, or unreadable) means the retry was refused.
 	 *
 	 * @param SessionRecord $record Row.
 	 * @param \WC_Order     $order  Order.
@@ -394,12 +421,13 @@ final class ReturnHandler {
 					),
 				);
 			} catch ( \Throwable $e ) {
-				$status = $e instanceof ApiException ? $e->getStatusCode() : 0;
-				$detail = get_class( $e ) . ' HTTP ' . $status;
-				if ( $status >= 400 && $status < 500 ) {
+				$status  = $e instanceof ApiException ? $e->getStatusCode() : 0;
+				$detail  = get_class( $e ) . ' HTTP ' . $status;
+				$refused = $status >= 400 && $status < 500;
+				if ( $refused && 1 === $attempt ) {
 					return array( self::PROCESS_FAILED, $detail );
 				}
-				$this->log( sprintf( 'Return: session row %d order %d: process attempt %d uncertain (%s); reading the session.', $record->id(), $order->get_id(), $attempt, $detail ), 'warning' );
+				$this->log( sprintf( 'Return: session row %d order %d: process attempt %d %s (%s); reading the session.', $record->id(), $order->get_id(), $attempt, $refused ? 'refused' : 'uncertain', $detail ), 'warning' );
 			}
 
 			try {

@@ -75,6 +75,9 @@ class ReturnHandlerTest extends TestCase {
 	/** @var FakeWc */
 	private $wc;
 
+	/** @var bool Whether express checkout may run (main plugin usable, SDK shim available). */
+	private $available = true;
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
@@ -111,6 +114,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->logs        = array();
 		$this->scheduled   = array();
 		$this->environment = 'TEST';
+		$this->available   = true;
 		$this->tax_follows = false;
 		$this->wallee_host = 'app-wallee.com';
 		$this->repository = new FakeSessionRepository(
@@ -208,7 +212,10 @@ class ReturnHandlerTest extends TestCase {
 			$this->environment,
 			$this->wallee_host,
 			$this->tax_follows,
-			new FailedOrderSettlement( $this->api, $log )
+			new FailedOrderSettlement( $this->api, $log ),
+			function () {
+				return $this->available;
+			}
 		);
 	}
 
@@ -451,6 +458,61 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
 		$this->assertSame( array( 501 => 'session_update_failed' ), $this->orders->failed );
 		$this->assertNotContains( 'processSession', $this->api->methods() );
+	}
+
+	public function test_without_the_sdk_shim_the_return_is_refused_before_any_wallee_call() {
+		$this->available = false;
+
+		$url = $this->handler()->handle( $this->query() );
+
+		$this->assertSame( self::CART, $url );
+		$this->assertNothingCreated();
+		$this->assertSame( array(), $this->api->calls, 'no wallee call at all' );
+		$this->assertSame( 'created', $this->repository->row['state'], 'not claimed' );
+		$this->assertSame( array( 'error: Express checkout is currently not available. You have not been charged. Please use the regular checkout.' ), $this->notices );
+		$this->assertContains( 'warning: Return: express checkout is not available (main plugin or SDK compatibility shim); session not processed.', $this->logs );
+	}
+
+	public function test_a_bad_signature_is_still_reported_as_such_without_the_shim() {
+		$this->available = false;
+
+		$this->handler()->handle( $this->query( 'bad' ) );
+
+		$this->assertContains( 'warning: Return: invalid or missing signature.', $this->logs );
+	}
+
+	public function test_a_refusal_of_the_retry_for_a_session_that_moved_on_counts_as_already_processed() {
+		$this->api->process  = array( new ApiException( 'timeout' ), new ApiException( 'already processed', 409 ) );
+		$this->api->sessions = array( self::approved(), self::approved(), self::processing(), self::processing() );
+
+		$url = $this->handler()->handle( $this->query() );
+
+		$this->assertSame( self::RECEIVED, $url );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( array( 'getSession', 'processSession', 'getSession', 'processSession', 'getSession', 'getSession', 'getTransaction' ), $this->api->methods() );
+		$this->assertSame( 629017977, $this->orders->orders[501]->get_meta( '_wallee_ec_transaction_id' ) );
+		$this->assertSame( array( 501 ), $this->scheduled );
+		$this->assertStringContainsString( 'process attempt 2 refused (Wallee\ExpressCheckout\Api\ApiException HTTP 409); reading the session', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_refusal_of_the_retry_for_a_session_still_approved_is_a_real_refusal() {
+		$this->api->process  = array( new ApiException( 'timeout' ), new ApiException( 'invalid', 422 ) );
+		$this->api->sessions = array( self::approved(), self::approved(), self::approved() );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
+		$this->assertSame( 2, count( array_keys( $this->api->methods(), 'processSession', true ) ) );
+		$this->assertStringContainsString( 'HTTP 422, session APPROVED', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_refusal_of_the_retry_with_an_unreadable_session_fails_the_order() {
+		$this->api->process  = array( new ApiException( 'timeout' ), new ApiException( 'conflict', 409 ) );
+		$this->api->sessions = array( self::approved(), self::approved(), new ApiException( 'down', 503 ) );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
+		$this->assertStringContainsString( 'session unreadable', implode( "\n", $this->logs ) );
 	}
 
 	public function test_clear_process_refusal_fails_order_without_reread() {
