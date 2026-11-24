@@ -154,6 +154,7 @@ final class Plugin {
 		add_filter( 'woocommerce_cancel_unpaid_order', array( Order\OrderFactory::class, 'cancelUnpaid' ), 10, 2 );
 		// Admin-only hooks; registered on every request so they are also there for WP-CLI and admin-post.
 		Admin\Settings::register();
+		Admin\TestOrderBadge::register();
 	}
 
 	/**
