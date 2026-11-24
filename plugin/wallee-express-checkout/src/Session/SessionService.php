@@ -47,13 +47,6 @@ class SessionService {
 	private $line_items;
 
 	/**
-	 * URL signer, used for the session UUID generation only.
-	 *
-	 * @var UrlSigner
-	 */
-	private $signer;
-
-	/**
 	 * Settings.
 	 *
 	 * @var Settings
@@ -73,15 +66,13 @@ class SessionService {
 	 * @param ApiClient         $api        API client.
 	 * @param SessionRepository $repository Session storage.
 	 * @param LineItemBuilder   $line_items Line item mapper.
-	 * @param UrlSigner         $signer     URL signer.
 	 * @param Settings          $settings   Settings.
 	 * @param MainPluginAdapter $adapter    Main plugin adapter.
 	 */
-	public function __construct( ApiClient $api, SessionRepository $repository, LineItemBuilder $line_items, UrlSigner $signer, Settings $settings, MainPluginAdapter $adapter ) {
+	public function __construct( ApiClient $api, SessionRepository $repository, LineItemBuilder $line_items, Settings $settings, MainPluginAdapter $adapter ) {
 		$this->api        = $api;
 		$this->repository = $repository;
 		$this->line_items = $line_items;
-		$this->signer     = $signer;
 		$this->settings   = $settings;
 		$this->adapter    = $adapter;
 	}
@@ -150,7 +141,7 @@ class SessionService {
 	}
 
 	/**
-	 * Result URL handled by the `wallee_ec_result` WooCommerce API endpoint.
+	 * Result URL (the status is part of the signed purpose) handled by the `wallee_ec_result` WooCommerce API endpoint.
 	 *
 	 * @param string $uuid   Session UUID.
 	 * @param string $status `success` or `failure`.
@@ -166,7 +157,7 @@ class SessionService {
 				'wc-api'     => 'wallee_ec_result',
 				'status'     => $status,
 				'ec_session' => $uuid,
-				'sig'        => UrlSigner::fromWordPress()->sign( $uuid, self::PURPOSE_RESULT ),
+				'sig'        => UrlSigner::fromWordPress()->sign( $uuid, self::PURPOSE_RESULT . ':' . $status ),
 			),
 			home_url( '/' )
 		);

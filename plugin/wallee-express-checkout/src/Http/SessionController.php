@@ -16,7 +16,7 @@ use Wallee\ExpressCheckout\Cart\LineItemBuilder;
 use Wallee\ExpressCheckout\Cart\SnapshotFactory;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\RateLimiter;
-use Wallee\ExpressCheckout\Security\UrlSigner;
+use Wallee\ExpressCheckout\Session\SessionRecord;
 use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Session\SessionService;
 
@@ -34,6 +34,37 @@ final class SessionController {
 	const REUSE_SECONDS  = 900;
 	const RATE_MAX       = 20;
 	const RATE_WINDOW    = 60;
+	const GLOBAL_MAX     = 300;
+
+	const MAX_QUANTITY        = 999;
+	const MAX_VARIATIONS      = 20;
+	const MAX_ATTRIBUTE_NAME  = 100;
+	const MAX_ATTRIBUTE_VALUE = 200;
+
+	/**
+	 * Rate limiter.
+	 *
+	 * @var RateLimiter
+	 */
+	private $limiter;
+
+	/**
+	 * Session storage.
+	 *
+	 * @var SessionRepository
+	 */
+	private $repository;
+
+	/**
+	 * Constructor.
+	 *
+	 * @param RateLimiter       $limiter    Rate limiter.
+	 * @param SessionRepository $repository Session storage.
+	 */
+	public function __construct( RateLimiter $limiter, SessionRepository $repository ) {
+		$this->limiter    = $limiter;
+		$this->repository = $repository;
+	}
 
 	/**
 	 * Registers the route.
@@ -42,7 +73,8 @@ final class SessionController {
 		add_action(
 			'rest_api_init',
 			static function () {
-				( new self() )->registerRoute();
+				global $wpdb;
+				( new self( new RateLimiter(), new SessionRepository( $wpdb ) ) )->registerRoute();
 			}
 		);
 	}
@@ -67,21 +99,26 @@ final class SessionController {
 					'productId'   => array(
 						'type'              => 'integer',
 						'default'           => 0,
+						'minimum'           => 1,
 						'sanitize_callback' => 'absint',
 					),
 					'variationId' => array(
 						'type'              => 'integer',
 						'default'           => 0,
+						'minimum'           => 0,
 						'sanitize_callback' => 'absint',
 					),
 					'variation'   => array(
 						'type'              => 'object',
 						'default'           => array(),
+						'validate_callback' => array( self::class, 'validateVariation' ),
 						'sanitize_callback' => array( self::class, 'sanitizeVariation' ),
 					),
 					'quantity'    => array(
 						'type'              => 'integer',
 						'default'           => 1,
+						'minimum'           => 1,
+						'maximum'           => self::MAX_QUANTITY,
 						'sanitize_callback' => 'absint',
 					),
 				),
@@ -111,6 +148,24 @@ final class SessionController {
 	}
 
 	/**
+	 * Bounds for variation attributes: a map of at most 20 scalar values.
+	 *
+	 * @param mixed $value Raw value.
+	 */
+	public static function validateVariation( $value ): bool {
+		if ( ! is_array( $value ) || count( $value ) > self::MAX_VARIATIONS ) {
+			return false;
+		}
+		foreach ( $value as $attribute => $selected ) {
+			if ( ! is_scalar( $selected ) || strlen( (string) $attribute ) > self::MAX_ATTRIBUTE_NAME || strlen( (string) $selected ) > self::MAX_ATTRIBUTE_VALUE ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
 	 * Sanitises variation attributes: scalar keys and values only.
 	 *
 	 * @param mixed $value Raw value.
@@ -130,6 +185,17 @@ final class SessionController {
 	}
 
 	/**
+	 * Applies the global and the per-IP rate limit. The global bucket protects
+	 * the paid wallee call against forged forwarding headers.
+	 *
+	 * @param string $ip Client IP address.
+	 */
+	public function rateAllows( string $ip ): bool {
+		return $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW )
+			&& $this->limiter->allow( 'session|' . $ip, self::RATE_MAX, self::RATE_WINDOW );
+	}
+
+	/**
 	 * Handles a session request.
 	 *
 	 * @param \WP_REST_Request $request Request.
@@ -138,8 +204,7 @@ final class SessionController {
 	public function handle( $request ) {
 		$adapter = Plugin::adapter();
 
-		$limiter = new RateLimiter();
-		if ( ! $limiter->allow( 'session|' . \WC_Geolocation::get_ip_address(), self::RATE_MAX, self::RATE_WINDOW ) ) {
+		if ( ! $this->rateAllows( \WC_Geolocation::get_ip_address() ) ) {
 			return new \WP_REST_Response( array( 'error' => 'rate_limited' ), 429 );
 		}
 
@@ -160,7 +225,10 @@ final class SessionController {
 
 		try {
 			$snapshot = $this->snapshotFor( $context, $request );
+			$hash     = $snapshot->hash();
 		} catch ( \InvalidArgumentException $e ) {
+			return self::refusal( 'unavailable' );
+		} catch ( \RuntimeException $e ) {
 			return self::refusal( 'unavailable' );
 		}
 
@@ -169,17 +237,15 @@ final class SessionController {
 			return self::refusal( $reason );
 		}
 
-		$reused = $this->reusable( $context, $snapshot->hash() );
+		$reused = $this->reusable( $context, $hash );
 		if ( null !== $reused ) {
 			return new \WP_REST_Response( array( 'sessionToken' => $reused ), 200 );
 		}
 
-		global $wpdb;
 		$service = new SessionService(
 			new ApiClient( new SdkTransport( $adapter ) ),
-			new SessionRepository( $wpdb ),
+			$this->repository,
 			new LineItemBuilder(),
-			UrlSigner::fromWordPress(),
 			$settings,
 			$adapter
 		);
@@ -194,7 +260,7 @@ final class SessionController {
 			return new \WP_REST_Response( array( 'error' => 'unavailable' ), 502 );
 		}
 
-		$this->remember( $context, $snapshot->hash(), $result );
+		$this->remember( $context, $hash, $result );
 
 		return new \WP_REST_Response( array( 'sessionToken' => $result['sessionToken'] ), 200 );
 	}
@@ -222,6 +288,7 @@ final class SessionController {
 
 	/**
 	 * A token from the customer's WooCommerce session for the same content.
+	 * A stale or used entry is forgotten.
 	 *
 	 * @param string $context Context.
 	 * @param string $hash    Snapshot hash.
@@ -232,7 +299,29 @@ final class SessionController {
 			return null;
 		}
 		$entry = WC()->session->get( self::SESSION_KEY );
-		if ( ! is_array( $entry ) || ! isset( $entry['context'], $entry['hash'], $entry['token'], $entry['created'] ) ) {
+		if ( null === $entry || '' === $entry ) {
+			return null;
+		}
+		$token = $this->reusableToken( $entry, $context, $hash );
+		if ( null === $token ) {
+			self::forget();
+		}
+
+		return $token;
+	}
+
+	/**
+	 * The token of a remembered entry when it may still be used: same
+	 * context and content, younger than 15 minutes, and its stored session
+	 * has not been used yet.
+	 *
+	 * @param mixed  $entry   Remembered entry.
+	 * @param string $context Context.
+	 * @param string $hash    Snapshot hash.
+	 * @return string|null
+	 */
+	public function reusableToken( $entry, string $context, string $hash ): ?string {
+		if ( ! is_array( $entry ) || ! isset( $entry['context'], $entry['hash'], $entry['token'], $entry['uuid'], $entry['created'] ) ) {
 			return null;
 		}
 		if ( $entry['context'] !== $context || ! hash_equals( (string) $entry['hash'], $hash ) ) {
@@ -241,8 +330,22 @@ final class SessionController {
 		if ( ! is_string( $entry['token'] ) || '' === $entry['token'] || time() - (int) $entry['created'] >= self::REUSE_SECONDS ) {
 			return null;
 		}
+		$record = $this->repository->findByUuid( (string) $entry['uuid'] );
+		if ( null === $record || SessionRecord::CREATED !== $record->state() ) {
+			return null;
+		}
 
 		return $entry['token'];
+	}
+
+	/**
+	 * Forgets the remembered session of the current customer. Called when an
+	 * order has been created from it.
+	 */
+	public static function forget(): void {
+		if ( WC()->session ) {
+			WC()->session->__unset( self::SESSION_KEY );
+		}
 	}
 
 	/**

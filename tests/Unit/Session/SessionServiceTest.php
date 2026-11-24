@@ -87,7 +87,6 @@ class SessionServiceTest extends TestCase {
 			new ApiClient( $this->transport ),
 			new SessionRepository( $this->db ),
 			new LineItemBuilder(),
-			UrlSigner::fromWordPress(),
 			new Settings(),
 			new SpaceAdapter()
 		);
@@ -158,8 +157,12 @@ class SessionServiceTest extends TestCase {
 		$this->assertSame( 'wallee_ec_result', $q['wc-api'] );
 		$this->assertSame( 'success', $q['status'] );
 		$this->assertSame( $uuid, $q['ec_session'] );
-		$this->assertTrue( UrlSigner::fromWordPress()->verify( $uuid, 'result', $q['sig'] ) );
+		$this->assertTrue( UrlSigner::fromWordPress()->verify( $uuid, 'result:success', $q['sig'] ) );
 		$this->assertFalse( UrlSigner::fromWordPress()->verify( $uuid, 'return', $q['sig'] ) );
+		$this->assertFalse( UrlSigner::fromWordPress()->verify( $uuid, 'result:failure', $q['sig'] ) );
+		$failure = self::query_of( SessionService::resultUrl( $uuid, 'failure' ) );
+		$this->assertTrue( UrlSigner::fromWordPress()->verify( $uuid, 'result:failure', $failure['sig'] ) );
+		$this->assertFalse( UrlSigner::fromWordPress()->verify( $uuid, 'result:success', $failure['sig'] ) );
 	}
 
 	public function test_result_url_rejects_unknown_status() {
@@ -186,7 +189,6 @@ class SessionServiceTest extends TestCase {
 			new ApiClient( $failing ),
 			new SessionRepository( $this->db ),
 			new LineItemBuilder(),
-			UrlSigner::fromWordPress(),
 			new Settings(),
 			new SpaceAdapter()
 		);
