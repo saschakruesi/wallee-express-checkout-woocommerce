@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Deploy: pull the current branch on the instance (the plugin folder is bind-mounted).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+exec "$here/remote" "cd /opt/wallee-ec/repo && git pull --ff-only && git log -1 --format='deployed %h %s'"
