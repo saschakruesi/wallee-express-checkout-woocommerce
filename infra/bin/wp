@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run WP-CLI inside the shop's WordPress setup on the staging instance.
+# Usage: infra/bin/wp plugin list
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+args=""
+for a in "$@"; do args+=" $(printf '%q' "$a")"; done
+exec "$here/remote" "cd /opt/wallee-ec/repo/infra && docker compose --progress quiet --env-file /opt/wallee-ec/.env --profile tools run --rm -T wpcli wp$args"

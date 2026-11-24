@@ -1,0 +1,12 @@
+.wallee-ec {
+	margin: 1em 0;
+}
+
+.wallee-ec[hidden] {
+	display: none;
+}
+
+.wallee-ec-terms {
+	margin: 0.5em 0 0;
+	font-size: 0.85em;
+}

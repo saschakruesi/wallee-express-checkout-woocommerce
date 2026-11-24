@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<ruleset name="wallee Express Checkout">
+	<description>Coding standard for the wallee Express Checkout plugin.</description>
+
+	<file>plugin</file>
+	<!-- Mirrors third-party (wallee SDK) code style; still syntax-checked by bin/lint. -->
+	<exclude-pattern>plugin/wallee-express-checkout/compat/*</exclude-pattern>
+	<arg name="extensions" value="php"/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+
+	<config name="testVersion" value="7.4-"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress">
+		<!-- PSR-4 class file names are used instead of class-*.php. -->
+		<exclude name="WordPress.Files.FileName"/>
+		<!-- Public camelCase method names are binding across the plugin's tasks. -->
+		<exclude name="WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid"/>
+	</rule>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="wallee-express-checkout"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

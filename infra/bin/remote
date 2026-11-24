@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Run a shell command on the staging instance through SSM and print its output.
+# Usage: infra/bin/remote "<shell command>"   (or pipe the script on stdin)
+# Exits with the remote exit code.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+export AWS_PAGER="" AWS_PROFILE=default AWS_REGION=eu-north-1 AWS_DEFAULT_REGION=eu-north-1
+
+iid="${INSTANCE_ID:-}"
+if [ -z "$iid" ] && [ -f "$here/../.state.json" ]; then iid="$(jq -r '.instance_id // empty' "$here/../.state.json")"; fi
+[ -n "$iid" ] || { echo "remote: no instance id (run infra/aws/provision.sh first)" >&2; exit 2; }
+
+if [ $# -gt 0 ]; then cmd="$1"; else cmd="$(cat)"; fi
+b64="$(printf '%s' "export HOME=/root PATH=\$PATH:/snap/bin; $cmd" | base64 | tr -d '\n')"
+params="$(jq -n --arg c "echo $b64 | base64 -d | bash" '{commands:[$c], executionTimeout:["3600"]}')"
+
+cid=""
+for _ in 1 2 3 4 5 6; do
+  if cid="$(aws ssm send-command --instance-ids "$iid" --document-name AWS-RunShellScript \
+        --comment wallee-ec --parameters "$params" --query Command.CommandId --output text 2>/dev/null)"; then break; fi
+  cid=""; sleep 5
+done
+[ -n "$cid" ] || { echo "remote: send-command failed" >&2; exit 2; }
+
+status=""
+while :; do
+  sleep 2
+  status="$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" --query Status --output text 2>/dev/null || true)"
+  case "$status" in
+    Success|Failed|Cancelled|TimedOut|Cancelling) break ;;
+  esac
+done
+
+inv="$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" --output json)"
+printf '%s' "$inv" | jq -j '.StandardOutputContent'
+printf '%s' "$inv" | jq -j '.StandardErrorContent' >&2
+code="$(printf '%s' "$inv" | jq -r '.ResponseCode')"
+[ "$code" = "-1" ] && code=1
+exit "$code"

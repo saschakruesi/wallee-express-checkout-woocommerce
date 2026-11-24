@@ -7,3 +7,5 @@ node_modules/
 *.pem
 *.key
 infra/.state.json
+.superpowers/
+.phpunit.result.cache
