@@ -181,7 +181,7 @@ class ReturnHandlerTest extends TestCase {
 			UrlSigner::fromWordPress(),
 			$this->api,
 			$this->orders,
-			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
+			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, $this->tax_follows ),
 			function ( $order_id ) {
 				$this->scheduled[] = $order_id;
 				return true;
@@ -596,6 +596,29 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'processed', $this->repository->row['state'] );
 		$this->assertSame( array(), $this->orders->failed, 'an unreadable transaction is not "no e-mail"' );
 		$this->assertSame( array( 501 ), $this->scheduled );
+	}
+
+	public function test_checks_skipped_because_the_transaction_was_not_read_are_left_for_after_payment() {
+		$this->api->transaction = new ApiException( 'timeout' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+
+		$this->assertTrue( CustomerDetails::checksPending( $this->orders->orders[501] ) );
+		$this->assertSame( array(), $this->orders->coupon_checks );
+	}
+
+	public function test_checks_skipped_because_the_session_has_no_transaction_yet_are_left_for_after_payment() {
+		$this->api->sessions = array( self::approved(), array_merge( self::processing(), array( 'linkedTransaction' => null ) ) );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertTrue( CustomerDetails::checksPending( $this->orders->orders[501] ) );
+	}
+
+	public function test_checks_done_at_return_are_not_left_for_after_payment() {
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+
+		$this->assertFalse( CustomerDetails::checksPending( $this->orders->orders[501] ) );
 	}
 
 	public function test_processed_state_that_cannot_be_stored_still_redirects() {

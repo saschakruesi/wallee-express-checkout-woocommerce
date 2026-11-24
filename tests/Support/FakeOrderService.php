@@ -102,6 +102,13 @@ class FakeOrderService extends OrderService {
 	public $applied_email = 'buyer@example.test';
 
 	/**
+	 * Result of couponUsageRecorded().
+	 *
+	 * @var bool
+	 */
+	public $usage_recorded = false;
+
+	/**
 	 * Class of the orders create() returns.
 	 *
 	 * @var string
@@ -202,6 +209,15 @@ class FakeOrderService extends OrderService {
 	 */
 	public function stockAndCoupons( CartSnapshot $snapshot ): ?string {
 		return $this->stock_reason;
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function couponUsageRecorded( \WC_Order $order ): bool {
+		return $this->usage_recorded;
 	}
 
 	/**

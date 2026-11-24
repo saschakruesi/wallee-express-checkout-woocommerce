@@ -153,7 +153,7 @@ class ResultHandlerTest extends TestCase {
 			$this->repository,
 			UrlSigner::fromWordPress(),
 			$this->orders,
-			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
+			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, false ),
 			new OrderLinker( $this->adapter ),
 			function ( $order_id ) {
 				$this->scheduled[] = $order_id;
@@ -247,6 +247,18 @@ class ResultHandlerTest extends TestCase {
 
 		$this->assertSame( array( 'getSession', 'getTransaction' ), $this->api->methods() );
 		$this->assertSame( 'buyer@example.test', $this->order->get_billing_email() );
+	}
+
+	public function test_success_repeats_the_checks_skipped_at_return_and_keeps_the_paid_order() {
+		$this->order->meta[ CustomerDetails::META_CHECKS_PENDING ] = 'yes';
+		$this->orders->coupon_reason                                = 'coupon_invalid';
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertSame( array( 'getSession', 'getTransaction' ), $this->api->methods(), 'transaction and e-mail known, but checks pending' );
+		$this->assertSame( array( 'ACTION REQUIRED: check before shipping (coupon_invalid).' ), $this->order->notes );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( array( 501 ), $this->adapter->links );
 	}
 
 	public function test_success_when_step_ten_fails_still_shows_order_received() {

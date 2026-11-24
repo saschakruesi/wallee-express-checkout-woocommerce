@@ -14,6 +14,7 @@ use Wallee\ExpressCheckout\Order\CustomerDetails;
 use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Order\OrderService;
+use Wallee\ExpressCheckout\Order\OrderValidator;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Session\SessionRecord;
@@ -124,7 +125,7 @@ final class ResultHandler {
 				$repository = new SessionRepository( $wpdb );
 				$orders     = new OrderService();
 				$log        = array( $adapter, 'log' );
-				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log ), new OrderLinker( $adapter ), array( LinkScheduler::class, 'schedule' ), $log );
+				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ), new OrderLinker( $adapter ), array( LinkScheduler::class, 'schedule' ), $log );
 
 				Redirects::send( $handler->handle( Redirects::query( array( 'status', 'ec_session', 'sig' ) ) ), null );
 			}
@@ -190,7 +191,7 @@ final class ResultHandler {
 
 		// The customer may have paid: a missing e-mail only gets a note here.
 		$transaction_id = $this->transactionId( $record, $order );
-		if ( null === $transaction_id || '' === $order->get_billing_email() ) {
+		if ( null === $transaction_id || '' === $order->get_billing_email() || CustomerDetails::checksPending( $order ) ) {
 			try {
 				$this->details->collectAfterPayment( $record, $order );
 			} catch ( \Throwable $e ) {

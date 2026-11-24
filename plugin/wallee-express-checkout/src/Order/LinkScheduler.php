@@ -131,7 +131,7 @@ final class LinkScheduler {
 		$orders     = new OrderService();
 		$log        = array( $adapter, 'log' );
 
-		return new self( $orders, new CustomerDetails( $api, $repository, $orders, $log ), new OrderLinker( $adapter ), $repository, array( self::class, 'scheduleAttempt' ), $log );
+		return new self( $orders, new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ), new OrderLinker( $adapter ), $repository, array( self::class, 'scheduleAttempt' ), $log );
 	}
 
 	/**
@@ -224,7 +224,7 @@ final class LinkScheduler {
 	 */
 	private function resolve( \WC_Order $order, bool $last ): bool {
 		$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
-		if ( $transaction_id <= 0 ) {
+		if ( $transaction_id <= 0 || CustomerDetails::checksPending( $order ) ) {
 			try {
 				$record = $this->repository->findByUuid( (string) $order->get_meta( OrderFactory::META_SESSION ) );
 				if ( null !== $record ) {

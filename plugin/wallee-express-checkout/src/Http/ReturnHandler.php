@@ -185,23 +185,24 @@ final class ReturnHandler {
 			'woocommerce_api_wallee_ec_return',
 			static function () {
 				global $wpdb;
-				$adapter    = Plugin::adapter();
-				$api        = new ApiClient( new SdkTransport( $adapter ) );
-				$repository = new SessionRepository( $wpdb );
-				$orders     = new OrderService();
-				$log        = array( $adapter, 'log' );
-				$host       = wp_parse_url( $adapter->baseUrl(), PHP_URL_HOST );
-				$handler    = new self(
+				$adapter     = Plugin::adapter();
+				$api         = new ApiClient( new SdkTransport( $adapter ) );
+				$repository  = new SessionRepository( $wpdb );
+				$orders      = new OrderService();
+				$log         = array( $adapter, 'log' );
+				$host        = wp_parse_url( $adapter->baseUrl(), PHP_URL_HOST );
+				$tax_follows = OrderValidator::taxFollowsAddress();
+				$handler     = new self(
 					$repository,
 					UrlSigner::fromWordPress(),
 					$api,
 					$orders,
-					new CustomerDetails( $api, $repository, $orders, $log ),
+					new CustomerDetails( $api, $repository, $orders, $log, $tax_follows ),
 					array( LinkScheduler::class, 'schedule' ),
 					$log,
 					Plugin::settings()->environment(),
 					is_string( $host ) ? $host : '',
-					OrderValidator::taxFollowsAddress()
+					$tax_follows
 				);
 
 				$url = $handler->handle( Redirects::query( array( 'ec_session', 'sig' ) ) );
@@ -415,7 +416,8 @@ final class ReturnHandler {
 	 * country the shipping and the taxes were calculated for (amendment 3);
 	 * then WooCommerce's tentative coupon hold is taken.
 	 * A transaction that cannot be read is not a failure: the customer goes
-	 * on and the background link retries.
+	 * on, the background link retries, and the checks are repeated once the
+	 * transaction is read after payment (CustomerDetails::collectAfterPayment()).
 	 *
 	 * Every failure decided here goes through failAfterProcess(), which keeps
 	 * an order whose money is already reserved or taken unless the reason is
@@ -438,6 +440,14 @@ final class ReturnHandler {
 			$collected = $this->details->collect( $record, $order );
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: session row %d order %d: transaction details not read (%s); retried later.', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
+		}
+		if ( null === $collected ) {
+			// The customer checks need the transaction: repeated once it is read after payment.
+			try {
+				$this->details->deferChecks( $order );
+			} catch ( \Throwable $e ) {
+				$this->log( sprintf( 'Return: order %d: pending checks not recorded (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+			}
 		}
 		$transaction_id = null === $collected ? 0 : $collected['transaction_id'];
 		$state          = null === $collected ? '' : $collected['state'];
@@ -705,9 +715,7 @@ final class ReturnHandler {
 	 * @param \WC_Order $order Order.
 	 */
 	private static function orderCountry( \WC_Order $order ): string {
-		$country = (string) $order->get_shipping_country();
-
-		return '' === $country ? (string) $order->get_billing_country() : $country;
+		return OrderValidator::deliveryCountry( $order );
 	}
 
 	/**

@@ -23,6 +23,18 @@ final class CustomerDetails {
 	const META_TRANSACTION = '_wallee_ec_transaction_id';
 
 	/**
+	 * Order meta: the customer checks of the return (coupons for the e-mail,
+	 * destination) were skipped because the transaction could not be read.
+	 */
+	const META_CHECKS_PENDING = '_wallee_ec_checks_pending';
+
+	/**
+	 * Reason when the coupons cannot be re-checked because WooCommerce has
+	 * already counted this order's own use of them.
+	 */
+	const COUPONS_NOT_RECHECKED = 'coupons_not_rechecked';
+
+	/**
 	 * API client.
 	 *
 	 * @var ApiClient
@@ -51,18 +63,27 @@ final class CustomerDetails {
 	private $log;
 
 	/**
+	 * Whether WooCommerce taxes by the customer's address.
+	 *
+	 * @var bool
+	 */
+	private $tax_follows_address;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param ApiClient         $api        API client.
 	 * @param SessionRepository $repository Session storage.
 	 * @param OrderService      $orders     Order operations.
 	 * @param callable          $log        Logger: function ( string $message, string $level ).
+	 * @param bool              $tax_follows Whether WooCommerce taxes by the customer's address (OrderValidator::taxFollowsAddress()).
 	 */
-	public function __construct( ApiClient $api, SessionRepository $repository, OrderService $orders, callable $log ) {
-		$this->api        = $api;
-		$this->repository = $repository;
-		$this->orders     = $orders;
-		$this->log        = $log;
+	public function __construct( ApiClient $api, SessionRepository $repository, OrderService $orders, callable $log, bool $tax_follows ) {
+		$this->api                 = $api;
+		$this->repository          = $repository;
+		$this->orders              = $orders;
+		$this->log                 = $log;
+		$this->tax_follows_address = $tax_follows;
 	}
 
 	/**
@@ -120,6 +141,11 @@ final class CustomerDetails {
 	 * Like collect(), for an order whose customer may already have paid: a missing
 	 * e-mail never fails the order here, it only gets a private note (once).
 	 *
+	 * If the return skipped the customer checks (see deferChecks()), they run
+	 * here once the transaction is read. A failure never fails the paid
+	 * order: it gets one private "ACTION REQUIRED" note. The checks run once;
+	 * later calls do not repeat them.
+	 *
 	 * @param SessionRecord $record Row.
 	 * @param \WC_Order     $order  Order of the row.
 	 * @return array{transaction_id: int, state: string, email: bool}|null See collect().
@@ -131,8 +157,90 @@ final class CustomerDetails {
 			$this->orders->addNoteOnce( $order, __( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', 'wallee-express-checkout' ) );
 			call_user_func( $this->log, sprintf( 'Order %d: no e-mail address from wallee; order kept with a note.', $order->get_id() ), 'warning' );
 		}
+		if ( null !== $result && self::checksPending( $order ) ) {
+			$this->repeatChecks( $record, $order, $result['email'] );
+		}
 
 		return $result;
+	}
+
+	/**
+	 * Records that the customer checks of the return were skipped, so
+	 * collectAfterPayment() runs them.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function deferChecks( \WC_Order $order ): void {
+		$order->update_meta_data( self::META_CHECKS_PENDING, 'yes' );
+		$order->save();
+	}
+
+	/**
+	 * Whether the customer checks of the return are still to be run.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public static function checksPending( \WC_Order $order ): bool {
+		return 'yes' === $order->get_meta( self::META_CHECKS_PENDING );
+	}
+
+	/**
+	 * Runs the skipped checks on a paid order and records that they ran.
+	 *
+	 * @param SessionRecord $record    Row.
+	 * @param \WC_Order     $order     Order with the customer data applied.
+	 * @param bool          $has_email Whether the order has an e-mail address.
+	 */
+	private function repeatChecks( SessionRecord $record, \WC_Order $order, bool $has_email ): void {
+		$reason = $this->checkFailure( $record, $order, $has_email );
+		if ( null === $reason ) {
+			call_user_func( $this->log, sprintf( 'Order %d: checks after payment passed.', $order->get_id() ) );
+		} else {
+			$this->orders->addNoteOnce(
+				$order,
+				sprintf(
+					/* translators: %s: reason code. */
+					__( 'ACTION REQUIRED: check before shipping (%s).', 'wallee-express-checkout' ),
+					$reason
+				)
+			);
+			call_user_func( $this->log, sprintf( 'Order %d: check after payment failed (%s); order kept with a note.', $order->get_id(), $reason ), 'warning' );
+		}
+		$order->delete_meta_data( self::META_CHECKS_PENDING );
+		$order->save();
+	}
+
+	/**
+	 * The return's customer checks for a paid order: coupons valid for the
+	 * e-mail (if there is one) and the destination country.
+	 *
+	 * @param SessionRecord $record    Row.
+	 * @param \WC_Order     $order     Order with the customer data applied.
+	 * @param bool          $has_email Whether the order has an e-mail address.
+	 * @return string|null Reason code, null if the checks pass.
+	 */
+	private function checkFailure( SessionRecord $record, \WC_Order $order, bool $has_email ): ?string {
+		$snapshot = $record->snapshot();
+		$coupons  = null;
+		if ( $has_email && array() !== $snapshot->coupons() ) {
+			if ( $this->orders->couponUsageRecorded( $order ) ) {
+				$coupons = self::COUPONS_NOT_RECHECKED;
+			} else {
+				try {
+					if ( null !== $this->orders->customerCoupons( $snapshot, (string) $order->get_billing_email() ) ) {
+						return OrderValidator::COUPON_INVALID;
+					}
+				} catch ( \Throwable $e ) {
+					call_user_func( $this->log, sprintf( 'Order %d: coupon check after payment failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+
+					return 'coupon_check_failed';
+				}
+			}
+		}
+
+		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), OrderValidator::deliveryCountry( $order ), $this->tax_follows_address );
+
+		return null !== $destination ? $destination : $coupons;
 	}
 
 	/**

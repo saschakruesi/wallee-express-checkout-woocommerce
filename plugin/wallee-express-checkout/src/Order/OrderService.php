@@ -86,6 +86,22 @@ class OrderService {
 	}
 
 	/**
+	 * Whether WooCommerce has already counted the order's coupon usage (it
+	 * does when the order becomes on-hold, processing or completed). A coupon
+	 * check after that counts the order's own use.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function couponUsageRecorded( \WC_Order $order ): bool {
+		$store = method_exists( $order, 'get_data_store' ) ? $order->get_data_store() : null;
+		if ( ! is_object( $store ) || ! is_callable( array( $store, 'get_recorded_coupon_usage_counts' ) ) ) {
+			return false;
+		}
+
+		return (bool) $store->get_recorded_coupon_usage_counts( $order );
+	}
+
+	/**
 	 * See OrderValidator::customerCoupons().
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.

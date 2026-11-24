@@ -172,6 +172,17 @@ final class OrderValidator {
 	}
 
 	/**
+	 * Country of an order's delivery address: shipping, else billing.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public static function deliveryCountry( \WC_Order $order ): string {
+		$country = (string) $order->get_shipping_country();
+
+		return '' === $country ? (string) $order->get_billing_country() : $country;
+	}
+
+	/**
 	 * Compares the country of the wallet's address with the stored shipping
 	 * quote and, where taxes follow the address, with the snapshot's tax
 	 * location.

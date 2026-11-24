@@ -111,7 +111,7 @@ class LinkSchedulerTest extends TestCase {
 
 		return new LinkScheduler(
 			$this->orders,
-			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
+			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, false ),
 			new OrderLinker( $this->adapter ),
 			$this->repository,
 			function ( $order_id, $delay, $deduplicate ) {
@@ -232,6 +232,20 @@ class LinkSchedulerTest extends TestCase {
 
 		$this->assertSame( array(), $this->orders->failed );
 		$this->assertSame( array( 'The payment is approved, but wallee returned no valid e-mail address for the customer.' ), $this->order->notes );
+	}
+
+	public function test_checks_skipped_at_return_are_repeated_even_with_a_known_transaction() {
+		$this->order->meta['_wallee_ec_transaction_id']              = 629017977;
+		$this->order->meta[ CustomerDetails::META_CHECKS_PENDING ] = 'yes';
+		$this->api->transaction['shippingAddress']                  = array( 'country' => 'DE' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 'getSession', 'getTransaction' ), $this->api->methods() );
+		$this->assertSame( array( 'ACTION REQUIRED: check before shipping (destination_changed).' ), $this->order->notes );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'wallee_7', $this->order->get_payment_method(), 'still linked' );
+		$this->assertFalse( CustomerDetails::checksPending( $this->order ) );
 	}
 
 	public function test_admin_retry_needs_no_flag_and_no_transaction_meta() {
