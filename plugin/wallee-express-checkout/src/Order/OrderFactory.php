@@ -128,11 +128,12 @@ final class OrderFactory {
 
 		$order->save();
 
-		if ( null === $email ) {
-			$order->add_order_note( __( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', 'wallee-express-checkout' ) );
+		if ( null === $email && '' === $order->get_billing_email() ) {
+			self::add_note_once( $order, __( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', 'wallee-express-checkout' ) );
 		}
 		if ( null !== $quote_country && '' !== $quote_country && '' !== $shipping['country'] && 0 !== strcasecmp( $shipping['country'], $quote_country ) ) {
-			$order->add_order_note(
+			self::add_note_once(
+				$order,
 				sprintf(
 					/* translators: 1: country the shipping rate was calculated for, 2: country of the shipping address. */
 					__( 'The shipping address is in a different country (%2$s) than the one the shipping costs were calculated for (%1$s). Please check the shipping costs.', 'wallee-express-checkout' ),
@@ -141,6 +142,22 @@ final class OrderFactory {
 				)
 			);
 		}
+	}
+
+	/**
+	 * Adds a private note unless the order already has it. The customer data
+	 * can be applied more than once.
+	 *
+	 * @param \WC_Order $order Order.
+	 * @param string    $note  Note text.
+	 */
+	private static function add_note_once( \WC_Order $order, string $note ): void {
+		foreach ( wc_get_order_notes( array( 'order_id' => $order->get_id() ) ) as $existing ) {
+			if ( $existing->content === $note ) {
+				return;
+			}
+		}
+		$order->add_order_note( $note );
 	}
 
 	/**
