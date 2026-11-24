@@ -86,6 +86,13 @@ final class SessionRecord {
 	private $created_at;
 
 	/**
+	 * Shipping quote of the last shipping callback: destination and rates.
+	 *
+	 * @var array|null
+	 */
+	private $shipping_quote;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param int          $id                Row ID.
@@ -97,8 +104,9 @@ final class SessionRecord {
 	 * @param int|null     $order_id          Order ID.
 	 * @param int|null     $transaction_id    Transaction ID.
 	 * @param string       $created_at        Creation time, UTC.
+	 * @param array|null   $shipping_quote    Shipping quote, null when no callback stored one.
 	 */
-	public function __construct( int $id, string $uuid, int $wallee_session_id, int $space_id, CartSnapshot $snapshot, string $state, ?int $order_id, ?int $transaction_id, string $created_at ) {
+	public function __construct( int $id, string $uuid, int $wallee_session_id, int $space_id, CartSnapshot $snapshot, string $state, ?int $order_id, ?int $transaction_id, string $created_at, ?array $shipping_quote = null ) {
 		$this->id                = $id;
 		$this->uuid              = $uuid;
 		$this->wallee_session_id = $wallee_session_id;
@@ -108,6 +116,7 @@ final class SessionRecord {
 		$this->order_id          = $order_id;
 		$this->transaction_id    = $transaction_id;
 		$this->created_at        = $created_at;
+		$this->shipping_quote    = $shipping_quote;
 	}
 
 	/**
@@ -180,5 +189,14 @@ final class SessionRecord {
 	 */
 	public function createdAt(): string {
 		return $this->created_at;
+	}
+
+	/**
+	 * Shipping quote stored by the last shipping callback: `destination`
+	 * (country, state, postcode, city) and `rates` (as returned by
+	 * ShippingOptionsProvider::ratesFor). Null when none was stored.
+	 */
+	public function shippingQuote(): ?array {
+		return $this->shipping_quote;
 	}
 }

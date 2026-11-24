@@ -14,7 +14,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	const DB_VERSION     = '1';
+	const DB_VERSION     = '2';
 	const DB_VERSION_KEY = 'wallee_ec_db_version';
 	const CRON_HOOK      = 'wallee_ec_cleanup';
 	const RETENTION_DAYS = 7;
@@ -49,6 +49,7 @@ final class Installer {
 	state varchar(20) NOT NULL,
 	order_id bigint(20) unsigned NULL DEFAULT NULL,
 	transaction_id bigint(20) unsigned NULL DEFAULT NULL,
+	shipping_quote longtext NULL,
 	created_at datetime NOT NULL,
 	updated_at datetime NOT NULL,
 	PRIMARY KEY  (id),

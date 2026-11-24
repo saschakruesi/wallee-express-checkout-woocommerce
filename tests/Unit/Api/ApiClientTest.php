@@ -82,6 +82,44 @@ class ApiClientTest extends TestCase {
 		);
 	}
 
+	public function test_get_transaction_expands_both_addresses(): void {
+		$this->transport->response = array( 'id' => 629017977, 'state' => 'PROCESSING' );
+
+		$this->assertSame( $this->transport->response, $this->client->getTransaction( 629017977 ) );
+		$this->assertSame(
+			array(
+				array(
+					'method' => 'GET',
+					'path'   => '/v2.0/payment/transactions/629017977',
+					'query'  => array( 'expand' => 'billingAddress,shippingAddress' ),
+					'body'   => null,
+				),
+			),
+			$this->transport->calls
+		);
+	}
+
+	/**
+	 * @dataProvider non_positive_ids
+	 *
+	 * @param int $id Transaction ID.
+	 */
+	public function test_get_transaction_rejects_a_non_positive_id( int $id ): void {
+		$this->expectException( ApiException::class );
+		try {
+			$this->client->getTransaction( $id );
+		} finally {
+			$this->assertSame( array(), $this->transport->calls );
+		}
+	}
+
+	public function non_positive_ids(): array {
+		return array(
+			'zero'     => array( 0 ),
+			'negative' => array( -5 ),
+		);
+	}
+
 	public function test_process_session_posts_exact_body_and_returns_https_url(): void {
 		$this->transport->response = array( 'redirectUrl' => 'https://app-wallee.com/pay/1' );
 

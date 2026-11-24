@@ -204,6 +204,65 @@ class SessionRepositoryTest extends TestCase {
 		$this->assertSame( array( 'id' => 1 ), $where );
 	}
 
+	public function test_update_json_encodes_the_shipping_quote() {
+		$quote = array(
+			'destination' => array( 'country' => 'CH', 'state' => '', 'postcode' => '8400', 'city' => 'Winterthur' ),
+			'rates'       => array( array( 'id' => 'flat_rate:1', 'cost' => 7.5, 'tax' => 0.61 ) ),
+		);
+
+		$this->repo()->update( 1, array( 'shipping_quote' => $quote ) );
+
+		$this->assertSame( json_encode( $quote ), $this->db->last_update[1]['shipping_quote'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+	}
+
+	public function test_update_with_null_clears_the_shipping_quote() {
+		$this->repo()->update( 1, array( 'shipping_quote' => null ) );
+
+		$this->assertArrayHasKey( 'shipping_quote', $this->db->last_update[1] );
+		$this->assertNull( $this->db->last_update[1]['shipping_quote'] );
+	}
+
+	public function test_update_rejects_a_shipping_quote_that_is_not_an_array() {
+		$this->expectException( \InvalidArgumentException::class );
+		$this->repo()->update( 1, array( 'shipping_quote' => 'x' ) );
+	}
+
+	public function test_update_throws_when_the_database_fails() {
+		$this->db->next_update_result = false;
+		$this->expectException( \RuntimeException::class );
+		$this->repo()->update( 1, array( 'state' => 'failed' ) );
+	}
+
+	public function test_find_by_uuid_decodes_the_shipping_quote() {
+		$quote              = array(
+			'destination' => array( 'country' => 'CH' ),
+			'rates'       => array( array( 'id' => 'flat_rate:1' ) ),
+		);
+		$this->db->next_row = array(
+			'id'                => '5',
+			'session_uuid'      => str_repeat( 'b', 64 ),
+			'wallee_session_id' => '99',
+			'space_id'          => '12',
+			'snapshot'          => json_encode( $this->snapshot()->toArray() ), // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+			'state'             => 'created',
+			'order_id'          => null,
+			'transaction_id'    => null,
+			'created_at'        => '2026-11-24 10:00:00',
+			'shipping_quote'    => json_encode( $quote ), // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+		);
+
+		$this->assertSame( $quote, $this->repo()->findByUuid( str_repeat( 'b', 64 ) )->shippingQuote() );
+
+		$this->db->next_row['shipping_quote'] = null;
+		$this->assertNull( $this->repo()->findByUuid( str_repeat( 'b', 64 ) )->shippingQuote() );
+
+		unset( $this->db->next_row['shipping_quote'] );
+		$this->assertNull( $this->repo()->findByUuid( str_repeat( 'b', 64 ) )->shippingQuote() );
+
+		$this->db->next_row['shipping_quote'] = '{broken';
+		$this->assertNull( $this->repo()->findByUuid( str_repeat( 'b', 64 ) )->shippingQuote() );
+	}
+
 	public function test_purge_older_than_deletes_by_cutoff_and_returns_count() {
 		$this->db->next_rows_affected = 3;
 

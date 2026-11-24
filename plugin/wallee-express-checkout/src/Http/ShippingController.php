@@ -196,6 +196,8 @@ final class ShippingController {
 			);
 		}
 
+		$this->storeQuote( $record, $destination, $rates );
+
 		$currency = $record->snapshot()->currency();
 		$options  = array();
 		foreach ( $rates as $rate ) {
@@ -206,6 +208,35 @@ final class ShippingController {
 			'status' => 200,
 			'body'   => ShippingRateMapper::success( $options ),
 		);
+	}
+
+	/**
+	 * Stores destination and rates on the row; the last callback wins. A failure
+	 * is logged and does not affect the response.
+	 *
+	 * @param SessionRecord $record      Row.
+	 * @param array         $destination Destination.
+	 * @param array         $rates       Rates as returned by the provider.
+	 */
+	private function storeQuote( SessionRecord $record, array $destination, array $rates ): void {
+		try {
+			$this->repository->update(
+				$record->id(),
+				array(
+					'shipping_quote' => array(
+						'destination' => array(
+							'country'  => $destination['country'],
+							'state'    => $destination['state'],
+							'postcode' => $destination['postcode'],
+							'city'     => $destination['city'],
+						),
+						'rates'       => $rates,
+					),
+				)
+			);
+		} catch ( \Throwable $e ) {
+			call_user_func( $this->log, sprintf( 'Shipping quote could not be stored for session row %d (%s).', $record->id(), get_class( $e ) ), 'error' );
+		}
 	}
 
 	/**

@@ -14,9 +14,10 @@ defined( 'ABSPATH' ) || exit;
  */
 class ApiClient {
 
-	const PATH_CREATE  = '/v2.0/express-checkout/session/create';
-	const PATH_SESSION = '/v2.0/express-checkout/session';
-	const PATH_PROCESS = '/v2.0/express-checkout/session/process';
+	const PATH_CREATE      = '/v2.0/express-checkout/session/create';
+	const PATH_SESSION     = '/v2.0/express-checkout/session';
+	const PATH_PROCESS     = '/v2.0/express-checkout/session/process';
+	const PATH_TRANSACTION = '/v2.0/payment/transactions';
 
 	/**
 	 * Transport.
@@ -67,6 +68,26 @@ class ApiClient {
 	 */
 	public function getSession( int $session_id ): array {
 		return $this->transport->request( 'GET', self::PATH_SESSION, array( 'sessionId' => $session_id ), null );
+	}
+
+	/**
+	 * Reads a transaction with its billing and shipping address.
+	 *
+	 * @param int $transaction_id Transaction ID.
+	 * @return array `Transaction`, every key may be absent.
+	 * @throws ApiException On failure or a non-positive ID.
+	 */
+	public function getTransaction( int $transaction_id ): array {
+		if ( $transaction_id <= 0 ) {
+			throw new ApiException( 'Invalid transaction ID.' );
+		}
+
+		return $this->transport->request(
+			'GET',
+			self::PATH_TRANSACTION . '/' . $transaction_id,
+			array( 'expand' => 'billingAddress,shippingAddress' ),
+			null
+		);
 	}
 
 	/**

@@ -58,6 +58,13 @@ class FakeWpdb extends \wpdb {
 	public $next_insert_result = 1;
 
 	/**
+	 * Result of the next update() call.
+	 *
+	 * @var int|false
+	 */
+	public $next_update_result = 1;
+
+	/**
 	 * Every statement, in order: prepared SQL strings and "INSERT <table>" / "UPDATE <table>" markers.
 	 *
 	 * @var string[]
@@ -150,6 +157,6 @@ class FakeWpdb extends \wpdb {
 	public function update( $table, $data, $where, $format = null, $where_format = null ) {
 		$this->queries[]   = 'UPDATE ' . $table;
 		$this->last_update = array( $table, $data, $where );
-		return 1;
+		return $this->next_update_result;
 	}
 }

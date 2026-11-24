@@ -124,7 +124,8 @@ final class SessionRepository {
 			(string) $row['state'],
 			null === $row['order_id'] ? null : (int) $row['order_id'],
 			null === $row['transaction_id'] ? null : (int) $row['transaction_id'],
-			(string) $row['created_at']
+			(string) $row['created_at'],
+			self::decode_quote( $row )
 		);
 	}
 
@@ -159,17 +160,20 @@ final class SessionRepository {
 	}
 
 	/**
-	 * Updates state, order ID and/or transaction ID.
+	 * Updates state, order ID, transaction ID and/or shipping quote.
 	 *
 	 * @param int   $id     Row ID.
-	 * @param array $fields Column => value, keys limited to state, order_id, transaction_id.
-	 * @throws \InvalidArgumentException On a key outside the allow list or an unknown state.
+	 * @param array $fields Column => value, keys limited to state, order_id, transaction_id, shipping_quote
+	 *                      (an array, JSON-encoded here; null clears it).
+	 * @throws \InvalidArgumentException On a key outside the allow list, an unknown state or a quote that is neither array nor null.
+	 * @throws \RuntimeException When the database reports a failure.
 	 */
 	public function update( int $id, array $fields ): void {
 		$allowed = array(
 			'state'          => '%s',
 			'order_id'       => '%d',
 			'transaction_id' => '%d',
+			'shipping_quote' => '%s',
 		);
 
 		$data    = array();
@@ -181,8 +185,12 @@ final class SessionRepository {
 			if ( 'state' === $key ) {
 				self::assert_state( (string) $value );
 			}
-			$data[ $key ] = 'state' === $key ? (string) $value : (int) $value;
-			$formats[]    = $allowed[ $key ];
+			if ( 'shipping_quote' === $key ) {
+				$data[ $key ] = self::encode_quote( $value );
+			} else {
+				$data[ $key ] = 'state' === $key ? (string) $value : (int) $value;
+			}
+			$formats[] = $allowed[ $key ];
 		}
 		if ( array() === $data ) {
 			return;
@@ -191,7 +199,9 @@ final class SessionRepository {
 		$data['updated_at'] = gmdate( 'Y-m-d H:i:s' );
 		$formats[]          = '%s';
 
-		$this->db->update( $this->table(), $data, array( 'id' => $id ), $formats, array( '%d' ) );
+		if ( false === $this->db->update( $this->table(), $data, array( 'id' => $id ), $formats, array( '%d' ) ) ) {
+			throw new \RuntimeException( 'Session could not be updated.' );
+		}
 	}
 
 	/**
@@ -219,6 +229,43 @@ final class SessionRepository {
 	 */
 	private function table(): string {
 		return self::tableName( $this->db );
+	}
+
+	/**
+	 * JSON for the quote column.
+	 *
+	 * @param mixed $value Array or null.
+	 * @return string|null
+	 * @throws \InvalidArgumentException If not an array or null.
+	 * @throws \RuntimeException If the array cannot be encoded.
+	 */
+	private static function encode_quote( $value ): ?string {
+		if ( null === $value ) {
+			return null;
+		}
+		if ( ! is_array( $value ) ) {
+			throw new \InvalidArgumentException( 'Shipping quote must be an array or null.' );
+		}
+		$json = wp_json_encode( $value );
+		if ( false === $json ) {
+			throw new \RuntimeException( 'Shipping quote could not be encoded to JSON.' );
+		}
+
+		return $json;
+	}
+
+	/**
+	 * Reads the quote column. Absent, empty or unreadable means no quote.
+	 *
+	 * @param array $row Table row.
+	 */
+	private static function decode_quote( array $row ): ?array {
+		if ( ! isset( $row['shipping_quote'] ) || ! is_string( $row['shipping_quote'] ) || '' === $row['shipping_quote'] ) {
+			return null;
+		}
+		$quote = json_decode( $row['shipping_quote'], true );
+
+		return is_array( $quote ) ? $quote : null;
 	}
 
 	/**

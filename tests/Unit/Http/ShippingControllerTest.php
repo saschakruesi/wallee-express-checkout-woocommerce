@@ -48,6 +48,11 @@ class ShippingControllerTest extends TestCase {
 		Monkey\setUp();
 		Functions\when( '__' )->returnArg();
 		Functions\when( 'sanitize_text_field' )->alias( 'trim' );
+		Functions\when( 'wp_json_encode' )->alias(
+			static function ( $data ) {
+				return json_encode( $data ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+			}
+		);
 		Functions\when( 'get_transient' )->alias(
 			function ( $key ) {
 				return isset( $this->transients[ $key ] ) ? $this->transients[ $key ] : false;
@@ -295,5 +300,50 @@ class ShippingControllerTest extends TestCase {
 			$this->assertStringNotContainsString( 'Somestreet', $line );
 			$this->assertStringNotContainsString( '8000', $line );
 		}
+	}
+
+	public function test_a_successful_calculation_stores_destination_and_rates_as_the_quote() {
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+
+		$this->handle( $this->body( array( 'state' => 'ZH' ) ) );
+
+		$this->assertSame( 'UPDATE wp_wallee_ec_session', end( $this->db->queries ) );
+		$this->assertSame( 1, $this->db->last_update[2]['id'] );
+		$this->assertSame(
+			json_encode( // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+				array(
+					'destination' => array(
+						'country'  => 'CH',
+						'state'    => 'ZH',
+						'postcode' => '8000',
+						'city'     => 'Zurich',
+					),
+					'rates'       => array( $this->rate() ),
+				)
+			),
+			$this->db->last_update[1]['shipping_quote']
+		);
+	}
+
+	public function test_no_rates_store_no_quote() {
+		$this->provider->method( 'ratesFor' )->willReturn( array() );
+		$this->provider->method( 'errorCodeFor' )->willReturn( 'SHIPPING_METHOD_UNAVAILABLE' );
+
+		$this->handle( $this->body() );
+
+		$this->assertNull( $this->db->last_update );
+	}
+
+	public function test_a_failed_store_is_logged_and_the_response_is_unchanged() {
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+		$this->db->next_update_result = false;
+
+		$result = $this->handle( $this->body() );
+
+		$this->assertSame( 200, $result['status'] );
+		$this->assertSame( 'flat_rate:1', $result['body']['shippingOptions'][0]['id'] );
+		$this->assertCount( 1, $this->logs );
+		$this->assertStringContainsString( 'could not be stored', $this->logs[0] );
+		$this->assertStringNotContainsString( 'Zurich', $this->logs[0] );
 	}
 }
