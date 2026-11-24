@@ -12,6 +12,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Http\ResultHandler;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
@@ -159,7 +160,8 @@ class ResultHandlerTest extends TestCase {
 				$this->scheduled[] = $order_id;
 				return true;
 			},
-			$log
+			$log,
+			new FailedOrderSettlement( $this->api, $log )
 		);
 	}
 
@@ -365,6 +367,40 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
 		$this->assertSame( array(), $this->repository->calls );
 		$this->assertSame( array(), $this->adapter->links );
+		$this->assertSame( array(), $this->api->calls, 'no owner failure on the order: nothing read' );
+	}
+
+	public function test_success_for_an_order_failed_for_an_owner_reason_voids_an_authorization() {
+		$this->repository     = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'destination_changed' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'AUTHORIZED',
+		);
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$this->assertSame( 'failed', $this->order->status );
+		$this->assertSame( array(), $this->adapter->links, 'not linked' );
+		$this->assertSame( array( 'error: Express checkout is not available for the selected delivery address. The reservation on your payment method is being released. You will not be charged. Please use the regular checkout to complete your order.' ), $this->notices );
+	}
+
+	public function test_success_for_an_order_failed_for_an_owner_reason_with_money_taken_says_so() {
+		$this->repository     = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'coupon_invalid' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'COMPLETED',
+		);
+
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertStringContainsString( 'A refund is needed', $this->order->notes[0] );
+		$this->assertSame( array( 'error: Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order 501.' ), $this->notices );
 	}
 
 	public function test_row_without_order_returns_cart() {

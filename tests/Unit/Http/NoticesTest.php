@@ -87,6 +87,13 @@ class NoticesTest extends TestCase {
 		);
 	}
 
+	public function test_a_released_reservation_says_the_customer_will_not_be_charged() {
+		$this->assertSame(
+			'The coupon in your cart cannot be used for this order. The reservation on your payment method is being released. You will not be charged. Please remove the coupon or use the regular checkout.',
+			Notices::forReason( 'coupon_invalid', Notices::CHARGE_RELEASED )
+		);
+	}
+
 	public function test_the_destination_message_names_the_country() {
 		$this->assertSame(
 			'Express checkout is not available for deliveries to Germany. You have not been charged. Please use the regular checkout to complete your order.',

@@ -16,8 +16,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * A message states "You have not been charged." only where the caller knows
  * no payment happened (CHARGE_NONE); where that is uncertain (CHARGE_UNKNOWN)
- * it says "If an amount was reserved, it will be released." instead. Money
- * already reserved or taken has its own message (paymentTaken()).
+ * it says "If an amount was reserved, it will be released." instead; where a
+ * reservation's void was requested (CHARGE_RELEASED) it says the reservation
+ * is being released. Money already reserved or taken that is not released
+ * has its own message (paymentTaken()).
  */
 final class Notices {
 
@@ -30,6 +32,11 @@ final class Notices {
 	 * It is not known whether an amount was reserved.
 	 */
 	const CHARGE_UNKNOWN = 'unknown';
+
+	/**
+	 * An amount was reserved and its release (void) was requested.
+	 */
+	const CHARGE_RELEASED = 'released';
 
 	/**
 	 * Reason code for a link used after its lifetime.
@@ -59,13 +66,17 @@ final class Notices {
 	 * REASONS is a technical problem.
 	 *
 	 * @param string $reason  Reason code; anything after the leading code (` (detail)`) is ignored.
-	 * @param string $charge  CHARGE_NONE or CHARGE_UNKNOWN.
+	 * @param string $charge  CHARGE_NONE, CHARGE_UNKNOWN or CHARGE_RELEASED.
 	 * @param string $country ISO country code of the delivery address, '' if unknown (destination reasons only).
 	 */
 	public static function forReason( string $reason, string $charge = self::CHARGE_NONE, string $country = '' ): string {
-		$charged = self::CHARGE_NONE === $charge
-			? __( 'You have not been charged.', 'wallee-express-checkout' )
-			: __( 'If an amount was reserved, it will be released.', 'wallee-express-checkout' );
+		if ( self::CHARGE_NONE === $charge ) {
+			$charged = __( 'You have not been charged.', 'wallee-express-checkout' );
+		} elseif ( self::CHARGE_RELEASED === $charge ) {
+			$charged = __( 'The reservation on your payment method is being released. You will not be charged.', 'wallee-express-checkout' );
+		} else {
+			$charged = __( 'If an amount was reserved, it will be released.', 'wallee-express-checkout' );
+		}
 
 		switch ( self::kind( $reason ) ) {
 			case 'expired':

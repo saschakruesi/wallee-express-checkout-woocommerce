@@ -113,6 +113,37 @@ class ApiClientTest extends TestCase {
 		}
 	}
 
+	public function test_void_transaction_posts_to_the_v2_void_online_endpoint_without_a_body(): void {
+		$this->transport->response = array( 'id' => 8801, 'state' => 'PENDING' );
+
+		$this->assertSame( $this->transport->response, $this->client->voidTransaction( 629017977 ) );
+		$this->assertSame(
+			array(
+				array(
+					'method' => 'POST',
+					'path'   => '/v2.0/payment/transactions/629017977/void-online',
+					'query'  => array(),
+					'body'   => null,
+				),
+			),
+			$this->transport->calls
+		);
+	}
+
+	/**
+	 * @dataProvider non_positive_ids
+	 *
+	 * @param int $id Transaction ID.
+	 */
+	public function test_void_transaction_rejects_a_non_positive_id( int $id ): void {
+		$this->expectException( ApiException::class );
+		try {
+			$this->client->voidTransaction( $id );
+		} finally {
+			$this->assertSame( array(), $this->transport->calls );
+		}
+	}
+
 	public function non_positive_ids(): array {
 		return array(
 			'zero'     => array( 0 ),

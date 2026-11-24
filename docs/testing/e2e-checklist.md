@@ -253,6 +253,30 @@ Expect: the sheet offers shipping for the CH address in both runs (the callback 
 |---|---|---|---|
 | | | | |
 
+### 28. Owner failure with the money only reserved (automatic void)
+Steps: needs a wallet or connector that authorises during the payment start without a browser step (PayPal in authorise-only mode, or a card connector set to deferred completion); with Bogus Pay the transaction stays PROCESSING until the browser step, so record "not testable" there. Create coupon `ONCE` with "Allowed e-mails" set to an address that is not the wallet's; apply it, standard approval.
+Expect: the cart with "The coupon in your cart cannot be used for this order. The reservation on your payment method is being released. You will not be charged. Please remove the coupon or use the regular checkout."; the order is `Failed` with the private note "wallee Express Checkout: a void of transaction N was requested automatically because this order failed (coupon_invalid). ..."; in the wallee portal the transaction becomes VOIDED within a few minutes. Log: `void of transaction N requested`. No second void request on reload. Delete the coupon afterwards.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 29. Owner failure with the money taken (no automatic void)
+Steps: as case 28 with a wallet that completes the payment itself (PayPal with immediate capture, transaction COMPLETED or FULFILL at return).
+Expect: the cart with "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."; the order is `Failed` with the note "ACTION REQUIRED: wallee transaction N is already COMPLETED (money taken), but this order failed (coupon_invalid). A refund is needed: ..."; no void request in the log; the transaction is not changed in wallee. Refund it in the wallee portal afterwards.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 30. Failed order revived by a late payment update
+Steps: after case 28 or 29 (or any express order failed with `coupon_invalid`, `no_email` or `destination_changed`), watch the order for 10 minutes and open it in the admin.
+Expect: if the main plugin's webhook moved the order out of `Failed` (to on-hold or processing), the order has the note "ACTION REQUIRED: this express order failed (<reason>), but its status was then set to <status> (for example by a payment update). ..."; an AUTHORIZED transaction of such an order is voided by the background job or when the order is opened (note as in case 28), after which the webhook sets the order to `Cancelled`. A void failure shows "ACTION REQUIRED ... the automatic void failed. Void transaction N manually in the wallee portal."
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
 ## How to diagnose a failed run
 
 Add-on log: WooCommerce > Status > Logs, source `wallee-express-checkout` (newest file by date). It holds IDs, states and reason codes only: no addresses, e-mails or credentials. Typical lines: `Created express checkout session ...`, `Return: session row N created -> ordering`, `... processed for order N`, `Result: success for session row N ...`, `Order N: linked to transaction T, gateway ...`, `Order N: link attempt K failed, next in M minutes.` Background link attempts: WooCommerce > Status > Scheduled Actions, hook `wallee_ec_link_order`.
@@ -283,7 +307,7 @@ Reason codes after `rejected:` (no order, no charge) or `failed:` (order set to 
 
 Each return logs `redirect target: wallee`, `shop` or `other:<host>` (host only).
 
-Customer notices (cart page) by reason: expired session or link: "Your express payment session has expired. ..."; destination (`shipping_missing`, `shipping_changed`, `destination_changed`): "Express checkout is not available for deliveries to <country>. ..." or "... for the selected delivery address. ..."; `out_of_stock`; `coupon_invalid`; cart changed (`amount_mismatch`, `tax_rate_changed`, `order_creation_failed`, `currency_mismatch`, rounding): "Your cart changed while you were paying. ..."; `no_email`; failure URL: "The payment was not completed. ..."; anything else: "The express payment could not be completed because of a technical problem. ...". The middle sentence is "You have not been charged." only where no payment can have happened; where that is not certain it is "If an amount was reserved, it will be released." With the money already reserved or taken the notice is "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."
+Customer notices (cart page) by reason: expired session or link: "Your express payment session has expired. ..."; destination (`shipping_missing`, `shipping_changed`, `destination_changed`): "Express checkout is not available for deliveries to <country>. ..." or "... for the selected delivery address. ..."; `out_of_stock`; `coupon_invalid`; cart changed (`amount_mismatch`, `tax_rate_changed`, `order_creation_failed`, `currency_mismatch`, rounding): "Your cart changed while you were paying. ..."; `no_email`; failure URL: "The payment was not completed. ..."; anything else: "The express payment could not be completed because of a technical problem. ...". The middle sentence is "You have not been charged." only where no payment can have happened; where that is not certain it is "If an amount was reserved, it will be released." With the money only reserved and the void requested the middle sentence is "The reservation on your payment method is being released. You will not be charged." With the money taken (or a failed void) the notice is "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."
 
 Session endpoint refusals (`reason` in the response, no buttons): `disabled`, `not_configured` (main plugin not configured or SDK shim unavailable), `empty`, `no_shipping_needed`, `subscription`, `multiple_packages`, `guest_checkout_disabled`, `unavailable` (snapshot not buildable; logged as `total_mismatch` or `rounding_mismatch` when the amounts would not add up to the cart total).
 

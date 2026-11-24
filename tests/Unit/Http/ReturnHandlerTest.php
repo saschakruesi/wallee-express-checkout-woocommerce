@@ -13,6 +13,7 @@ use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Api\ApiException;
 use Wallee\ExpressCheckout\Http\ReturnHandler;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Session\SessionService;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
@@ -39,6 +40,7 @@ class ReturnHandlerTest extends TestCase {
 	const RELEASED    = 'If an amount was reserved, it will be released.';
 	const TECHNICAL   = 'The express payment could not be completed because of a technical problem.';
 	const PAID_NOTICE = 'Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order 501.';
+	const RELEASING   = 'The reservation on your payment method is being released. You will not be charged.';
 
 	/** @var FakeSessionRepository */
 	private $repository;
@@ -205,7 +207,8 @@ class ReturnHandlerTest extends TestCase {
 			$log,
 			$this->environment,
 			$this->wallee_host,
-			$this->tax_follows
+			$this->tax_follows,
+			new FailedOrderSettlement( $this->api, $log )
 		);
 	}
 
@@ -547,32 +550,74 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $url );
 		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
-		$this->assertSame( array(), $this->scheduled );
+		$this->assertSame( array( 501 ), $this->scheduled, 'payment still undecided: checked again in the background' );
+		$this->assertSame( 'no_email', FailedOrderSettlement::failedReason( $this->orders->orders[501] ) );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods(), 'nothing to void while PROCESSING' );
 		$this->assertNull( $this->handler()->externalHost() );
 		$this->assertSame( array( 'error: The wallet did not provide an e-mail address, which we need for your order. You have not been charged. Please use the regular checkout.' ), $this->notices );
 		$this->assertSame( array( self::TEST_NOTE ), $this->orders->orders[501]->notes, 'nothing reserved yet: no portal action needed' );
 	}
 
 	/**
-	 * @dataProvider money_moved_states
+	 * @dataProvider captured_states
 	 *
 	 * @param string $state Transaction state.
 	 */
-	public function test_no_email_with_money_reserved_or_taken_asks_for_void_or_refund( string $state ) {
+	public function test_no_email_with_money_taken_asks_for_a_refund( string $state ) {
 		$this->orders->applied_email         = '';
 		$this->api->transaction['state'] = $state;
 
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
 
 		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods(), 'captured money is never voided' );
 		$notes = $this->orders->orders[501]->notes;
 		$this->assertCount( 2, $notes );
 		$this->assertSame( self::TEST_NOTE, $notes[0] );
 		$this->assertStringContainsString( 'ACTION REQUIRED', $notes[1] );
+		$this->assertStringContainsString( 'A refund is needed', $notes[1] );
 		$this->assertStringContainsString( '629017977', $notes[1] );
 		$this->assertStringContainsString( 'no_email', $notes[1] );
-		$this->assertStringContainsString( 'error: Return: order 501: wallee transaction 629017977 must be voided or refunded in the wallee portal', implode( "\n", $this->logs ) );
+		$this->assertStringContainsString( 'error: Order 501: transaction 629017977 is ' . $state . ' but the order failed (no_email); a refund is needed in the wallee portal.', implode( "\n", $this->logs ) );
 		$this->assertSame( array( 'error: ' . self::PAID_NOTICE ), $this->notices, 'the customer is told the payment was received' );
+		$this->assertSame( array(), $this->scheduled );
+	}
+
+	public function captured_states(): array {
+		return array(
+			'completed' => array( 'COMPLETED' ),
+			'fulfill'   => array( 'FULFILL' ),
+		);
+	}
+
+	public function test_no_email_with_an_authorization_voids_it_and_tells_the_customer() {
+		$this->orders->applied_email         = '';
+		$this->api->transaction['state'] = 'AUTHORIZED';
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$notes = $this->orders->orders[501]->notes;
+		$this->assertCount( 2, $notes );
+		$this->assertStringContainsString( 'void of transaction 629017977 was requested automatically', $notes[1] );
+		$this->assertStringNotContainsString( 'ACTION REQUIRED', $notes[1] );
+		$this->assertSame( array( 'error: The wallet did not provide an e-mail address, which we need for your order. ' . self::RELEASING . ' Please use the regular checkout.' ), $this->notices );
+		$this->assertSame( array(), $this->scheduled );
+	}
+
+	public function test_a_failed_void_keeps_the_payment_received_notice_and_asks_for_a_manual_void() {
+		$this->orders->applied_email     = '';
+		$this->api->transaction['state'] = 'AUTHORIZED';
+		$this->api->void                 = new ApiException( 'refused', 409 );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+
+		$notes = $this->orders->orders[501]->notes;
+		$this->assertCount( 2, $notes );
+		$this->assertStringStartsWith( 'ACTION REQUIRED:', $notes[1] );
+		$this->assertStringContainsString( 'void failed', $notes[1] );
+		$this->assertSame( array( 'error: ' . self::PAID_NOTICE ), $this->notices );
 	}
 
 	public function money_moved_states(): array {
@@ -718,7 +763,10 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $url );
 		$this->assertSame( array( 501 => $reason ), $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
-		$this->assertSame( array(), $this->scheduled );
+		$owner     = in_array( $reason, array( 'no_email', 'coupon_invalid', 'destination_changed' ), true );
+		$state     = is_array( $this->api->transaction ) && isset( $this->api->transaction['state'] ) ? $this->api->transaction['state'] : '';
+		$undecided = in_array( $state, array( 'PROCESSING', 'CONFIRMED', 'PENDING', 'CREATE', '' ), true );
+		$this->assertSame( $owner && $undecided ? array( 501 ) : array(), $this->scheduled, 'only an undecided payment of an order failed for an owner reason is checked again' );
 		$this->assertCount( 1, $this->notices );
 	}
 
@@ -732,14 +780,14 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0] );
 	}
 
-	public function test_a_coupon_failure_with_money_reserved_asks_for_void_or_refund() {
+	public function test_a_coupon_failure_with_money_reserved_voids_the_authorization() {
 		$this->orders->coupon_reason     = 'coupon_invalid';
 		$this->api->transaction['state'] = 'AUTHORIZED';
 
 		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
-		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
 		$this->assertStringContainsString( 'coupon_invalid', $this->orders->orders[501]->notes[1] );
-		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
+		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. ' . self::RELEASING . ' Please remove the coupon or use the regular checkout.', $this->notices[0] );
 	}
 
 	/**
@@ -773,11 +821,11 @@ class ReturnHandlerTest extends TestCase {
 	}
 
 	/**
-	 * @dataProvider money_moved_states
+	 * @dataProvider captured_states
 	 *
 	 * @param string $state Transaction state.
 	 */
-	public function test_a_refused_coupon_hold_with_money_moved_asks_for_void_or_refund( string $state ) {
+	public function test_a_refused_coupon_hold_with_money_taken_asks_for_a_refund( string $state ) {
 		$this->holding_orders( new \Exception( 'Coupon usage limit has been reached.' ) );
 		$this->api->transaction['state'] = $state;
 
@@ -1029,6 +1077,8 @@ class ReturnHandlerTest extends TestCase {
 		$this->api->transaction['state'] = $state;
 
 		$this->assertKeptToSuccess( $this->handler()->handle( $this->query() ) );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods(), 'a kept order is never voided' );
+		$this->assertSame( '', FailedOrderSettlement::failedReason( $this->orders->orders[501] ) );
 		$this->assertStringContainsString( 'coupon_check_failed, but transaction 629017977 is ' . $state . '; order kept', implode( "\n", $this->logs ) );
 	}
 
@@ -1151,6 +1201,26 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
 		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
 		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
+		$this->assertStringContainsString( 'A refund is needed', $this->orders->orders[501]->notes[1] );
+	}
+
+	public function test_a_technical_failure_of_an_unpaid_order_is_not_checked_again() {
+		$this->orders->coupon_error = new \RuntimeException( 'db' );
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertSame( '', FailedOrderSettlement::failedReason( $this->orders->orders[501] ) );
+	}
+
+	public function test_an_owner_failure_with_a_failed_payment_is_not_checked_again() {
+		$this->orders->coupon_reason     = 'coupon_invalid';
+		$this->api->transaction['state'] = 'FAILED';
+
+		$this->handler()->handle( $this->query() );
+
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
 	}
 
 	public function test_an_existing_customer_session_is_not_restarted() {

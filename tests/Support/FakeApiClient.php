@@ -36,6 +36,16 @@ class FakeApiClient extends ApiClient {
 	public $transaction = array();
 
 	/**
+	 * Answer to voidTransaction.
+	 *
+	 * @var array|\Throwable
+	 */
+	public $void = array(
+		'id'    => 8801,
+		'state' => 'PENDING',
+	);
+
+	/**
 	 * Recorded calls: method name and arguments.
 	 *
 	 * @var array[]
@@ -88,6 +98,17 @@ class FakeApiClient extends ApiClient {
 		$this->calls[] = array( 'getTransaction', $transaction_id );
 
 		return self::answer( $this->transaction );
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param int $transaction_id Transaction ID.
+	 */
+	public function voidTransaction( int $transaction_id ): array {
+		$this->calls[] = array( 'voidTransaction', $transaction_id );
+
+		return self::answer( $this->void );
 	}
 
 	/**

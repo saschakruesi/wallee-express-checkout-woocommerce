@@ -11,6 +11,7 @@ use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
 use Wallee\ExpressCheckout\Api\ApiException;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderFactory;
 use Wallee\ExpressCheckout\Order\OrderService;
@@ -145,6 +146,13 @@ final class ReturnHandler {
 	private $tax_follows_address;
 
 	/**
+	 * Settles wallee's money of an order failed for an owner-decided reason.
+	 *
+	 * @var FailedOrderSettlement
+	 */
+	private $settlement;
+
+	/**
 	 * Host of the wallee redirect URL returned by the last handle() call.
 	 *
 	 * @var string|null
@@ -154,18 +162,19 @@ final class ReturnHandler {
 	/**
 	 * Constructor.
 	 *
-	 * @param SessionRepository $repository    Session storage.
-	 * @param UrlSigner         $signer        Signer.
-	 * @param ApiClient         $api           API client.
-	 * @param OrderService      $orders        Order operations.
-	 * @param CustomerDetails   $details       Step 10.
-	 * @param callable          $schedule_link Schedules the background link: function ( int $order_id ): bool.
-	 * @param callable          $log           Logger: function ( string $message, string $level ).
-	 * @param string            $environment   Configured authorization environment, TEST or PRODUCTION.
-	 * @param string            $wallee_host   Host of the configured wallee base URL.
-	 * @param bool              $tax_follows   Whether WooCommerce taxes by the customer's address.
+	 * @param SessionRepository     $repository    Session storage.
+	 * @param UrlSigner             $signer        Signer.
+	 * @param ApiClient             $api           API client.
+	 * @param OrderService          $orders        Order operations.
+	 * @param CustomerDetails       $details       Step 10.
+	 * @param callable              $schedule_link Schedules the background link: function ( int $order_id ): bool.
+	 * @param callable              $log           Logger: function ( string $message, string $level ).
+	 * @param string                $environment   Configured authorization environment, TEST or PRODUCTION.
+	 * @param string                $wallee_host   Host of the configured wallee base URL.
+	 * @param bool                  $tax_follows   Whether WooCommerce taxes by the customer's address.
+	 * @param FailedOrderSettlement $settlement    Settles the money of an order failed for an owner-decided reason.
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log, string $environment, string $wallee_host, bool $tax_follows ) {
+	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log, string $environment, string $wallee_host, bool $tax_follows, FailedOrderSettlement $settlement ) {
 		$this->repository          = $repository;
 		$this->signer              = $signer;
 		$this->api                 = $api;
@@ -176,6 +185,7 @@ final class ReturnHandler {
 		$this->environment         = $environment;
 		$this->wallee_host         = strtolower( $wallee_host );
 		$this->tax_follows_address = $tax_follows;
+		$this->settlement          = $settlement;
 	}
 
 	/**
@@ -203,7 +213,8 @@ final class ReturnHandler {
 					$log,
 					Plugin::settings()->environment(),
 					is_string( $host ) ? $host : '',
-					$tax_follows
+					$tax_follows,
+					new FailedOrderSettlement( $api, $log )
 				);
 
 				$url = $handler->handle( Redirects::query( array( 'ec_session', 'sig' ) ) );
@@ -659,10 +670,16 @@ final class ReturnHandler {
 	 *
 	 * If the transaction read in this request has the money reserved or taken
 	 * (AUTHORIZED, COMPLETED, FULFILL), only the reasons the owner decided
-	 * must fail (FAIL_EVEN_IF_PAID) fail the order; the order gets an ACTION
-	 * REQUIRED note and the customer is told the payment was received. Any
-	 * other (technical) reason keeps the order and sends the customer to the
-	 * success result URL.
+	 * must fail (FAIL_EVEN_IF_PAID) fail the order; any other (technical)
+	 * reason keeps the order and sends the customer to the success result URL.
+	 *
+	 * An order failed for an owner-decided reason is marked as such and its
+	 * money settled (FailedOrderSettlement): a reservation (AUTHORIZED) is
+	 * voided and the customer told it is being released; taken money
+	 * (COMPLETED, FULFILL) is never touched, the order gets an ACTION REQUIRED
+	 * note that a refund is needed and the customer is told the payment was
+	 * received (also when the void failed). A payment not yet decided is
+	 * checked again by the background job, which voids it once authorised.
 	 *
 	 * Otherwise the order must not go on to wallee's payment step: order
 	 * `failed`, row `failed`, cart with a notice. The notice says the
@@ -677,8 +694,9 @@ final class ReturnHandler {
 	 * @param string        $state          Transaction state, '' if unknown.
 	 */
 	private function failAfterProcess( SessionRecord $record, \WC_Order $order, string $reason, int $transaction_id, string $state ): string {
-		$paid = $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true );
-		if ( $paid && ! in_array( $reason, self::FAIL_EVEN_IF_PAID, true ) ) {
+		$paid  = $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true );
+		$owner = in_array( $reason, self::FAIL_EVEN_IF_PAID, true );
+		if ( $paid && ! $owner ) {
 			$this->log( sprintf( 'Return: session row %d order %d: %s, but transaction %d is %s; order kept, success result URL.', $record->id(), $order->get_id(), $reason, $transaction_id, $state ), 'warning' );
 			$this->scheduleLink( $order );
 
@@ -688,30 +706,51 @@ final class ReturnHandler {
 		$this->log( sprintf( 'Return: session row %d order %d failed: %s (transaction %d, state %s).', $record->id(), $order->get_id(), $reason, $transaction_id, '' === $state ? 'unknown' : $state ), 'error' );
 		try {
 			$this->orders->fail( $order, $reason );
-			if ( $paid ) {
-				$order->add_order_note(
-					sprintf(
-						/* translators: 1: wallee transaction ID, 2: transaction state, 3: reason code. */
-						__( 'ACTION REQUIRED: wallee transaction %1$d is already %2$s (money reserved or taken), but this order failed (%3$s). Void or refund transaction %1$d in the wallee portal.', 'wallee-express-checkout' ),
-						$transaction_id,
-						$state,
-						$reason
-					)
-				);
-				$this->log( sprintf( 'Return: order %d: wallee transaction %d must be voided or refunded in the wallee portal (state %s).', $order->get_id(), $transaction_id, $state ), 'error' );
-			}
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: order %d could not be set to failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
 		}
 		$this->markFailed( $record );
 
+		$settled = $owner ? $this->settle( $order, $reason, $transaction_id, $state ) : FailedOrderSettlement::NONE;
+		if ( FailedOrderSettlement::OPEN === $settled ) {
+			// The payment is not decided yet: the background job voids it if it gets authorised.
+			$this->scheduleLink( $order );
+		}
+
+		$country = OrderValidator::noticeCountry( $record->snapshot(), $record->shippingQuote(), self::orderCountry( $order ) );
+		if ( FailedOrderSettlement::RELEASED === $settled ) {
+			return $this->toCart( Notices::forReason( $reason, Notices::CHARGE_RELEASED, $country ) );
+		}
 		if ( $paid ) {
 			return $this->toCart( Notices::paymentTaken( (string) $order->get_order_number() ) );
 		}
 
-		$country = OrderValidator::noticeCountry( $record->snapshot(), $record->shippingQuote(), self::orderCountry( $order ) );
-
 		return $this->toCart( Notices::forReason( $reason, $transaction_id > 0 && '' !== $state ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN, $country ) );
+	}
+
+	/**
+	 * Marks an order failed for an owner-decided reason and settles its money.
+	 * Any error is logged; the paid-order notice is the fallback.
+	 *
+	 * @param \WC_Order $order          Order.
+	 * @param string    $reason         Reason code.
+	 * @param int       $transaction_id wallee transaction ID, 0 if unknown.
+	 * @param string    $state          Transaction state, '' if unknown.
+	 * @return string FailedOrderSettlement outcome.
+	 */
+	private function settle( \WC_Order $order, string $reason, int $transaction_id, string $state ): string {
+		try {
+			FailedOrderSettlement::markFailed( $order, $reason );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Return: order %d: failure reason not saved (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
+		try {
+			return $this->settlement->settle( $order, $transaction_id, $state );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Return: order %d: payment of the failed order not settled (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+
+			return FailedOrderSettlement::RESERVED;
+		}
 	}
 
 	/**

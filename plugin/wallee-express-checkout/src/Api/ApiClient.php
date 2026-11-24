@@ -91,6 +91,23 @@ class ApiClient {
 	}
 
 	/**
+	 * Voids the authorisation of a transaction online
+	 * (`POST /v2.0/payment/transactions/{id}/void-online`, no body). wallee
+	 * accepts it only for a transaction in state AUTHORIZED.
+	 *
+	 * @param int $transaction_id Transaction ID.
+	 * @return array `TransactionVoid`, every key may be absent.
+	 * @throws ApiException On failure or a non-positive ID.
+	 */
+	public function voidTransaction( int $transaction_id ): array {
+		if ( $transaction_id <= 0 ) {
+			throw new ApiException( 'Invalid transaction ID.' );
+		}
+
+		return $this->transport->request( 'POST', self::PATH_TRANSACTION . '/' . $transaction_id . '/void-online', array(), null );
+	}
+
+	/**
 	 * Processes an approved session.
 	 *
 	 * @param int    $session_id         Session ID.

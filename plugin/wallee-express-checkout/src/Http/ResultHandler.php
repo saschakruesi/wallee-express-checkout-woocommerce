@@ -11,6 +11,7 @@ use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Order\OrderService;
@@ -92,17 +93,25 @@ final class ResultHandler {
 	private $log;
 
 	/**
+	 * Settles the money of an order failed for an owner-decided reason.
+	 *
+	 * @var FailedOrderSettlement
+	 */
+	private $settlement;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param SessionRepository $repository    Session storage.
-	 * @param UrlSigner         $signer        Signer.
-	 * @param OrderService      $orders        Order operations.
-	 * @param CustomerDetails   $details       Step 10.
-	 * @param OrderLinker       $linker        Link to the main plugin.
-	 * @param callable          $schedule_link Schedules the background link: function ( int $order_id ): bool.
-	 * @param callable          $log           Logger: function ( string $message, string $level ).
+	 * @param SessionRepository     $repository    Session storage.
+	 * @param UrlSigner             $signer        Signer.
+	 * @param OrderService          $orders        Order operations.
+	 * @param CustomerDetails       $details       Step 10.
+	 * @param OrderLinker           $linker        Link to the main plugin.
+	 * @param callable              $schedule_link Schedules the background link: function ( int $order_id ): bool.
+	 * @param callable              $log           Logger: function ( string $message, string $level ).
+	 * @param FailedOrderSettlement $settlement    Settles the money of an order failed for an owner-decided reason.
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, OrderService $orders, CustomerDetails $details, OrderLinker $linker, callable $schedule_link, callable $log ) {
+	public function __construct( SessionRepository $repository, UrlSigner $signer, OrderService $orders, CustomerDetails $details, OrderLinker $linker, callable $schedule_link, callable $log, FailedOrderSettlement $settlement ) {
 		$this->repository    = $repository;
 		$this->signer        = $signer;
 		$this->orders        = $orders;
@@ -110,6 +119,7 @@ final class ResultHandler {
 		$this->linker        = $linker;
 		$this->schedule_link = $schedule_link;
 		$this->log           = $log;
+		$this->settlement    = $settlement;
 	}
 
 	/**
@@ -125,7 +135,7 @@ final class ResultHandler {
 				$repository = new SessionRepository( $wpdb );
 				$orders     = new OrderService();
 				$log        = array( $adapter, 'log' );
-				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ), new OrderLinker( $adapter ), array( LinkScheduler::class, 'schedule' ), $log );
+				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ), new OrderLinker( $adapter ), array( LinkScheduler::class, 'schedule' ), $log, new FailedOrderSettlement( $api, $log ) );
 
 				Redirects::send( $handler->handle( Redirects::query( array( 'status', 'ec_session', 'sig' ) ) ), null );
 			}
@@ -186,7 +196,7 @@ final class ResultHandler {
 		if ( SessionRecord::PROCESSED !== $state && SessionRecord::ORDERING !== $state ) {
 			$this->log( sprintf( 'Result: success ignored for session row %d in state %s.', $record->id(), $state ), 'warning' );
 
-			return $this->toCart( Notices::forReason( 'success_ignored', Notices::CHARGE_UNKNOWN ) );
+			return $this->toCart( $this->failedOrderNotice( $order ) );
 		}
 
 		// The customer may have paid: a missing e-mail only gets a note here.
@@ -262,6 +272,35 @@ final class ResultHandler {
 		$charge = $order->has_status( array( 'pending', 'failed', 'cancelled' ) ) ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN;
 
 		return $this->toCart( Notices::forReason( Notices::PAYMENT_NOT_COMPLETED, $charge ) );
+	}
+
+	/**
+	 * Notice for a success URL of a row that did not go through. An order
+	 * that failed for an owner-decided reason keeps failed; its money is
+	 * settled (an authorisation is voided) and the notice says what happens
+	 * to it. Anything else gets the technical notice with the uncertain wording.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private function failedOrderNotice( \WC_Order $order ): string {
+		$reason = FailedOrderSettlement::failedReason( $order );
+		if ( '' === $reason ) {
+			return Notices::forReason( 'success_ignored', Notices::CHARGE_UNKNOWN );
+		}
+		try {
+			$settled = $this->settlement->settleFailedOrder( $order );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Result: order %d: transaction of the failed order not read (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+			$settled = FailedOrderSettlement::OPEN;
+		}
+		if ( FailedOrderSettlement::RELEASED === $settled ) {
+			return Notices::forReason( $reason, Notices::CHARGE_RELEASED );
+		}
+		if ( FailedOrderSettlement::TAKEN === $settled || FailedOrderSettlement::RESERVED === $settled ) {
+			return Notices::paymentTaken( (string) $order->get_order_number() );
+		}
+
+		return Notices::forReason( $reason, FailedOrderSettlement::NONE === $settled ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN );
 	}
 
 	/**

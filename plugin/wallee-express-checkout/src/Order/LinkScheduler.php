@@ -19,7 +19,9 @@ defined( 'ABSPATH' ) || exit;
  * review I1): after the process call an Action Scheduler job links the order
  * even when the customer's browser never comes back. It retries with back-off
  * and, after the last attempt, leaves the admin note. Viewing a not yet
- * linked express order in the admin tries once more.
+ * linked express order in the admin tries once more. For an order that
+ * failed for an owner-decided reason the same job settles the money instead
+ * of linking (FailedOrderSettlement).
  */
 final class LinkScheduler {
 
@@ -79,22 +81,31 @@ final class LinkScheduler {
 	private $log;
 
 	/**
+	 * Settles the money of orders failed for an owner-decided reason.
+	 *
+	 * @var FailedOrderSettlement
+	 */
+	private $settlement;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param OrderService      $orders     Order operations.
-	 * @param CustomerDetails   $details    Transaction details.
-	 * @param OrderLinker       $linker     Link to the main plugin.
-	 * @param SessionRepository $repository Session storage.
-	 * @param callable          $schedule   Scheduler, see self::scheduleAttempt().
-	 * @param callable          $log        Logger: function ( string $message, string $level ).
+	 * @param OrderService          $orders     Order operations.
+	 * @param CustomerDetails       $details    Transaction details.
+	 * @param OrderLinker           $linker     Link to the main plugin.
+	 * @param SessionRepository     $repository Session storage.
+	 * @param callable              $schedule   Scheduler, see self::scheduleAttempt().
+	 * @param callable              $log        Logger: function ( string $message, string $level ).
+	 * @param FailedOrderSettlement $settlement Settles the money of orders failed for an owner-decided reason.
 	 */
-	public function __construct( OrderService $orders, CustomerDetails $details, OrderLinker $linker, SessionRepository $repository, callable $schedule, callable $log ) {
+	public function __construct( OrderService $orders, CustomerDetails $details, OrderLinker $linker, SessionRepository $repository, callable $schedule, callable $log, FailedOrderSettlement $settlement ) {
 		$this->orders     = $orders;
 		$this->details    = $details;
 		$this->linker     = $linker;
 		$this->repository = $repository;
 		$this->schedule   = $schedule;
 		$this->log        = $log;
+		$this->settlement = $settlement;
 	}
 
 	/**
@@ -131,7 +142,15 @@ final class LinkScheduler {
 		$orders     = new OrderService();
 		$log        = array( $adapter, 'log' );
 
-		return new self( $orders, new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ), new OrderLinker( $adapter ), $repository, array( self::class, 'scheduleAttempt' ), $log );
+		return new self(
+			$orders,
+			new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ),
+			new OrderLinker( $adapter ),
+			$repository,
+			array( self::class, 'scheduleAttempt' ),
+			$log,
+			new FailedOrderSettlement( $api, $log )
+		);
 	}
 
 	/**
@@ -186,6 +205,11 @@ final class LinkScheduler {
 			return;
 		}
 		if ( $last ) {
+			if ( '' !== FailedOrderSettlement::failedReason( $order ) ) {
+				$this->log( sprintf( 'Order %d: payment of the failed order still undecided after %d attempts.', $order_id, $attempt ), 'warning' );
+
+				return;
+			}
 			$this->log( sprintf( 'Order %d: not linked after %d attempts.', $order_id, $attempt ), 'error' );
 
 			return;
@@ -216,13 +240,25 @@ final class LinkScheduler {
 	}
 
 	/**
-	 * Finds the transaction if needed, then links.
+	 * Finds the transaction if needed, then links. An order that failed for
+	 * an owner-decided reason is never linked: its money is settled instead
+	 * (an authorisation is voided, taken money flagged for a refund).
 	 *
 	 * @param \WC_Order $order Order.
 	 * @param bool      $last  Whether this is the last attempt.
-	 * @return bool Whether the order is linked.
+	 * @return bool Whether nothing is left to do: the order is linked, or a failed order is settled.
 	 */
 	private function resolve( \WC_Order $order, bool $last ): bool {
+		if ( '' !== FailedOrderSettlement::failedReason( $order ) ) {
+			try {
+				return FailedOrderSettlement::OPEN !== $this->settlement->settleFailedOrder( $order );
+			} catch ( \Throwable $e ) {
+				$this->log( sprintf( 'Order %d: transaction of the failed order not read (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+
+				return false;
+			}
+		}
+
 		$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
 		if ( $transaction_id <= 0 || CustomerDetails::checksPending( $order ) ) {
 			try {

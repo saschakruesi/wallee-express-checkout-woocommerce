@@ -12,6 +12,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Api\ApiException;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
@@ -118,7 +119,8 @@ class LinkSchedulerTest extends TestCase {
 				$this->scheduled[] = array( $order_id, $delay, $deduplicate );
 				return true;
 			},
-			$log
+			$log,
+			new FailedOrderSettlement( $this->api, $log )
 		);
 	}
 
@@ -263,6 +265,59 @@ class LinkSchedulerTest extends TestCase {
 
 		$this->assertSame( array(), $this->api->calls );
 		$this->assertSame( array(), $this->adapter->reads );
+	}
+
+	/**
+	 * The order failed at return for an owner reason while the payment was undecided.
+	 */
+	private function failed_for_owner_reason(): void {
+		$this->order->status                            = 'failed';
+		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+		FailedOrderSettlement::markFailed( $this->order, 'coupon_invalid' );
+	}
+
+	public function test_a_failed_order_whose_payment_got_authorized_is_voided_and_not_linked() {
+		$this->failed_for_owner_reason();
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 'getTransaction', 'voidTransaction' ), $this->api->methods() );
+		$this->assertSame( 'wallee_express_checkout', $this->order->get_payment_method(), 'not linked' );
+		$this->assertSame( array(), $this->scheduled, 'settled, no further attempt' );
+		$this->assertSame( 'failed', $this->order->status );
+		$this->assertStringContainsString( 'void of transaction 629017977 was requested automatically', $this->order->notes[0] );
+	}
+
+	public function test_a_failed_order_with_an_undecided_payment_is_checked_again_later() {
+		$this->failed_for_owner_reason();
+		$this->api->transaction['state'] = 'PROCESSING';
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 'getTransaction' ), $this->api->methods(), 'no void while PROCESSING' );
+		$this->assertSame( array( array( 501, 10, false ) ), $this->scheduled );
+		$this->assertSame( array(), $this->order->notes );
+	}
+
+	public function test_a_failed_order_with_captured_money_asks_for_a_refund_and_stops() {
+		$this->failed_for_owner_reason();
+		$this->api->transaction['state'] = 'FULFILL';
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertStringContainsString( 'A refund is needed', $this->order->notes[0] );
+	}
+
+	public function test_an_unreadable_transaction_of_a_failed_order_is_retried() {
+		$this->failed_for_owner_reason();
+		$this->api->transaction = new ApiException( 'down', 503 );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( array( 501, 10, false ) ), $this->scheduled );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
 	}
 
 	public function test_schedule_uses_action_scheduler_once_per_order() {
