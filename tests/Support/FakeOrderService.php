@@ -102,6 +102,20 @@ class FakeOrderService extends OrderService {
 	public $applied_email = 'buyer@example.test';
 
 	/**
+	 * Class of the orders create() returns.
+	 *
+	 * @var string
+	 */
+	public $order_class = \WC_Order::class;
+
+	/**
+	 * Called before create() returns the order, if set: function ( \WC_Order $order ).
+	 *
+	 * @var callable|null
+	 */
+	public $on_create = null;
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * @param int $order_id Order ID.
@@ -126,11 +140,15 @@ class FakeOrderService extends OrderService {
 			throw $this->create_error;
 		}
 		$total = null !== $this->next_total ? $this->next_total : $snapshot->total() + ( null === $rate ? 0 : $rate['cost'] + $rate['tax'] );
-		$order = new \WC_Order( $this->next_id, round( $total, 2 ) );
+		$class = $this->order_class;
+		$order = new $class( $this->next_id, round( $total, 2 ) );
 
 		$order->meta['_wallee_ec_session_uuid'] = $uuid;
 		$order->meta['_wallee_ec_session_id']   = $session_id;
 		$this->orders[ $order->get_id() ]        = $order;
+		if ( null !== $this->on_create ) {
+			call_user_func( $this->on_create, $order );
+		}
 
 		return $order;
 	}

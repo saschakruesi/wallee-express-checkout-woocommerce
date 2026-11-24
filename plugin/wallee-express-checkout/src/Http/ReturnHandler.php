@@ -412,7 +412,8 @@ final class ReturnHandler {
 	 * still be valid for it before the customer is sent to wallee's payment
 	 * step: an e-mail address exists (owner decision, design amendment 2),
 	 * the coupons are valid for that e-mail, and the address is in the
-	 * country the shipping and the taxes were calculated for (amendment 3).
+	 * country the shipping and the taxes were calculated for (amendment 3);
+	 * then WooCommerce's tentative coupon hold is taken.
 	 * A transaction that cannot be read is not a failure: the customer goes
 	 * on and the background link retries.
 	 *
@@ -611,6 +612,30 @@ final class ReturnHandler {
 
 		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $this->tax_follows_address ) ) {
 			return OrderValidator::DESTINATION_CHANGED;
+		}
+
+		return $this->holdCoupons( $order );
+	}
+
+	/**
+	 * Takes WooCommerce's tentative hold on the order's coupons for its
+	 * e-mail (WooCommerce 4.3 and later), as its checkout does, so parallel
+	 * orders cannot use up a limited coupon until the usage is recorded.
+	 * WooCommerce refuses the hold when a usage limit would be exceeded.
+	 *
+	 * @param \WC_Order $order Order with the customer data applied.
+	 * @return string|null `coupon_invalid` if the hold is refused, else null.
+	 */
+	private function holdCoupons( \WC_Order $order ): ?string {
+		if ( ! method_exists( $order, 'hold_applied_coupons' ) ) {
+			return null;
+		}
+		try {
+			$order->hold_applied_coupons( (string) $order->get_billing_email() );
+		} catch ( \Exception $e ) {
+			$this->log( sprintf( 'Return: order %d: coupon hold refused (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+
+			return OrderValidator::COUPON_INVALID;
 		}
 
 		return null;

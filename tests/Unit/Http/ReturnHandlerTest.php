@@ -19,6 +19,7 @@ use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
 use Wallee\ExpressCheckout\Tests\Support\FakeOrderService;
 use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
 use Wallee\ExpressCheckout\Tests\Support\FakeWc;
+use Wallee\ExpressCheckout\Tests\Support\HoldingOrder;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 /**
@@ -700,6 +701,67 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
 		$this->assertStringContainsString( 'coupon_invalid', $this->orders->orders[501]->notes[1] );
 		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
+	}
+
+	/**
+	 * Orders get WooCommerce's coupon hold; the hold throws the given error, if any.
+	 *
+	 * @param \Throwable|null $error Error of hold_applied_coupons().
+	 */
+	private function holding_orders( ?\Throwable $error = null ): void {
+		$this->orders->order_class = HoldingOrder::class;
+		$this->orders->on_create   = static function ( HoldingOrder $order ) use ( $error ) {
+			$order->hold_error = $error;
+		};
+	}
+
+	public function test_a_valid_order_takes_woocommerces_coupon_hold_for_the_wallet_email() {
+		$this->holding_orders();
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 'buyer@example.test' ), $this->orders->orders[501]->holds );
+		$this->assertSame( array(), $this->orders->failed );
+	}
+
+	public function test_a_refused_coupon_hold_fails_the_order_as_coupon_invalid() {
+		$this->holding_orders( new \Exception( 'Coupon usage limit has been reached.' ) );
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0] );
+		$logs = implode( "\n", $this->logs );
+		$this->assertStringContainsString( 'Return: order 501: coupon hold refused (Exception).', $logs );
+		$this->assertStringNotContainsString( 'usage limit', $logs, 'the exception message is not logged' );
+	}
+
+	/**
+	 * @dataProvider money_moved_states
+	 *
+	 * @param string $state Transaction state.
+	 */
+	public function test_a_refused_coupon_hold_with_money_moved_asks_for_void_or_refund( string $state ) {
+		$this->holding_orders( new \Exception( 'Coupon usage limit has been reached.' ) );
+		$this->api->transaction['state'] = $state;
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
+		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
+		$this->assertStringContainsString( 'coupon_invalid', $this->orders->orders[501]->notes[1] );
+		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
+	}
+
+	public function test_no_coupon_hold_is_taken_when_the_coupon_check_fails() {
+		$this->holding_orders();
+		$this->orders->coupon_reason = 'coupon_invalid';
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->orders[501]->holds );
+	}
+
+	public function test_no_coupon_hold_is_taken_when_the_destination_changed() {
+		$this->holding_orders();
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'DE' );
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->orders[501]->holds );
 	}
 
 	public function test_coupons_are_not_rechecked_without_an_email() {
