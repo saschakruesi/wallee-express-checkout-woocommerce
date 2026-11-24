@@ -28,6 +28,8 @@ class CustomerDetailsTest extends TestCase {
 
 	const NOTE_PREFIX = 'ACTION REQUIRED: check before shipping (';
 
+	const TAX_KEPT_NOTE = "ACTION REQUIRED: check tax. The customer's address is taxed differently from the price offered in express checkout; the order was kept at the offered price.";
+
 	/** @var FakeSessionRepository */
 	private $repository;
 
@@ -166,6 +168,64 @@ class CustomerDetailsTest extends TestCase {
 		$this->details()->collectAfterPayment( $this->record(), $this->order );
 
 		$this->assertSame( array( self::NOTE_PREFIX . 'destination_changed).' ), $this->order->notes );
+	}
+
+	/**
+	 * Row whose snapshot needs no shipping (no quote), taxes following the address.
+	 */
+	private function without_shipping(): void {
+		$data                               = CartSnapshotTest::data();
+		$data['items'][0]['needs_shipping'] = false;
+		$this->repository                   = new FakeSessionRepository(
+			$data,
+			array(
+				'state'    => 'processed',
+				'order_id' => 501,
+			)
+		);
+		$this->tax_follows                  = true;
+	}
+
+	public function test_a_deferred_tax_difference_without_shipping_keeps_the_order_at_the_offered_price() {
+		$this->without_shipping();
+		$this->deferred();
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'US' );
+
+		$this->details()->collectAfterPayment( $this->record(), $this->order );
+		$this->details()->collectAfterPayment( $this->record(), $this->order );
+
+		$this->assertSame( array( self::TAX_KEPT_NOTE ), $this->order->notes );
+		$this->assertSame( 'yes', $this->order->get_meta( CustomerDetails::META_TAX_KEPT ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertFalse( CustomerDetails::checksPending( $this->order ) );
+		$this->assertSame( '', $this->order->get_meta( '_wallee_ec_refund_required' ) );
+		$this->assertSame( '', $this->order->get_meta( '_wallee_ec_void' ) );
+		$this->assertStringContainsString( 'warning: Order 501: tax destination differs for a cart without shipping; order kept at the offered price with a note.', implode( "\n", $this->logs ) );
+	}
+
+	public function test_the_offered_price_note_is_added_once_per_order() {
+		$this->details()->keepAtOfferedPrice( $this->order );
+		$this->details()->keepAtOfferedPrice( $this->order );
+
+		$this->assertSame( array( self::TAX_KEPT_NOTE ), $this->order->notes );
+	}
+
+	public function test_the_offered_price_note_is_not_added_again_when_the_flag_is_set() {
+		$this->order->meta[ CustomerDetails::META_TAX_KEPT ] = 'yes';
+
+		$this->details()->keepAtOfferedPrice( $this->order );
+
+		$this->assertSame( array(), $this->order->notes );
+	}
+
+	public function test_a_deferred_coupon_failure_without_shipping_still_gets_the_check_note() {
+		$this->without_shipping();
+		$this->deferred();
+		$this->orders->coupon_reason = 'coupon_invalid';
+
+		$this->details()->collectAfterPayment( $this->record(), $this->order );
+
+		$this->assertSame( array( self::NOTE_PREFIX . 'coupon_invalid).' ), $this->order->notes );
 	}
 
 	public function test_a_deferred_check_compares_the_billing_address_when_taxes_follow_it() {

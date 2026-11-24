@@ -68,7 +68,9 @@ final class ReturnHandler {
 	 * Reasons that fail the order even when the money is already reserved or
 	 * taken (owner decision): the order cannot be fulfilled as approved.
 	 * Every other reason found after the process call is technical and never
-	 * fails an order whose payment went through.
+	 * fails an order whose payment went through. `destination_changed` is
+	 * never found for a cart without shipping: such an order is kept at the
+	 * offered price with a note (CustomerDetails::keepAtOfferedPrice()).
 	 */
 	const FAIL_EVEN_IF_PAID = array( 'no_email', OrderValidator::COUPON_INVALID, OrderValidator::DESTINATION_CHANGED );
 
@@ -665,7 +667,11 @@ final class ReturnHandler {
 
 		$tax_address = $this->tax_follows_address ? TaxDestination::orderAddress( $order ) : null;
 		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $tax_address );
-		if ( OrderValidator::DESTINATION_CHANGED === $destination ) {
+		if ( OrderValidator::DESTINATION_CHANGED === $destination && ! $snapshot->needsShipping() ) {
+			// No shipping step in the wallet, so no refusal before payment: kept at the offered price (owner decision).
+			$this->details->keepAtOfferedPrice( $order );
+			$this->log( sprintf( 'Return: order %d: tax destination differs for a cart without shipping; order kept at the offered price with a note.', $order->get_id() ), 'warning' );
+		} elseif ( OrderValidator::DESTINATION_CHANGED === $destination ) {
 			return OrderValidator::DESTINATION_CHANGED;
 		}
 		if ( OrderValidator::TAX_REGION_UNMATCHED === $destination ) {

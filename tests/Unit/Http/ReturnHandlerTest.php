@@ -23,6 +23,7 @@ use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Support\HoldingOrder;
 use Wallee\ExpressCheckout\Tests\Support\ThrowingMetaOrder;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
+use Wallee\ExpressCheckout\Tests\Unit\Order\CustomerDetailsTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
 require_once dirname( __DIR__, 2 ) . '/Support/wc-coupon-stub.php';
@@ -1162,11 +1163,73 @@ class ReturnHandlerTest extends TestCase {
 		);
 	}
 
-	public function test_an_address_outside_the_tax_country_fails_the_order_when_taxes_follow_the_address() {
+	/**
+	 * Asserts a cart without shipping was kept at the offered price: order
+	 * not failed, nothing voided or flagged for a refund, one tax note.
+	 *
+	 * @param string $url Returned URL.
+	 */
+	private function assertKeptAtOfferedPrice( string $url ): void {
+		$order = $this->orders->orders[501];
+		$this->assertSame( self::WALLEE, $url );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertNotSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array(), $this->notices );
+		$this->assertSame( '', FailedOrderSettlement::failedReason( $order ) );
+		$this->assertSame( '', $order->get_meta( '_wallee_ec_void' ) );
+		$this->assertSame( '', $order->get_meta( '_wallee_ec_refund_required' ) );
+		$this->assertNotContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$this->assertSame( 1, count( array_keys( $order->notes, CustomerDetailsTest::TAX_KEPT_NOTE, true ) ) );
+		$this->assertSame( 'yes', $order->get_meta( CustomerDetails::META_TAX_KEPT ) );
+		$this->assertStringContainsString( 'Return: order 501: tax destination differs for a cart without shipping; order kept at the offered price with a note.', implode( "\n", $this->logs ) );
+	}
+
+	public function test_an_address_outside_the_tax_country_keeps_a_cart_without_shipping_at_the_offered_price() {
 		$this->tax_follows = true;
-		$this->virtual_purchase( 'DE' );
+		$this->virtual_purchase( 'US' );
+
+		$this->assertKeptAtOfferedPrice( $this->handler()->handle( $this->query() ) );
+	}
+
+	/**
+	 * @dataProvider money_moved_states
+	 *
+	 * @param string $state Transaction state.
+	 */
+	public function test_a_paid_cart_without_shipping_and_another_tax_address_is_neither_voided_nor_refunded( string $state ) {
+		$this->tax_follows = true;
+		$this->virtual_purchase( 'US' );
+		$this->api->transaction['state'] = $state;
+
+		$this->assertKeptAtOfferedPrice( $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_a_coupon_invalid_for_the_email_still_fails_a_cart_without_shipping() {
+		$this->tax_follows = true;
+		$this->virtual_purchase( 'US' );
+		$this->orders->coupon_reason = 'coupon_invalid';
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
+		$this->assertNotContains( CustomerDetailsTest::TAX_KEPT_NOTE, $this->orders->orders[501]->notes );
+	}
+
+	public function test_a_missing_email_still_fails_a_cart_without_shipping() {
+		$this->tax_follows = true;
+		$this->virtual_purchase( 'US' );
+		$this->orders->applied_email = '';
+
+		$this->assertFailedBeforePayment( 'no_email', $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_a_tax_address_with_other_rates_still_fails_a_cart_that_needs_shipping() {
+		$this->tax_follows                         = true;
+		$this->tax_based_on                        = 'billing';
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'CH' );
+		$this->api->transaction['billingAddress']  = array( 'country' => 'US' );
 
 		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertNotContains( CustomerDetailsTest::TAX_KEPT_NOTE, $this->orders->orders[501]->notes );
+		$this->assertSame( '', $this->orders->orders[501]->get_meta( CustomerDetails::META_TAX_KEPT ) );
 	}
 
 	public function test_an_address_outside_the_tax_country_is_accepted_when_taxes_do_not_follow_the_address() {
@@ -1272,10 +1335,10 @@ class ReturnHandlerTest extends TestCase {
 		);
 	}
 
-	public function test_another_state_with_other_rates_still_fails_the_order() {
+	public function test_another_state_with_other_rates_keeps_a_cart_without_shipping_at_the_offered_price() {
 		$this->california_purchase( 'New York' );
 
-		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertKeptAtOfferedPrice( $this->handler()->handle( $this->query() ) );
 	}
 
 	public function test_an_unmatched_region_keeps_the_order_and_asks_to_check_the_tax() {

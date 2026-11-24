@@ -162,6 +162,16 @@ final class TaxDestination {
 	}
 
 	/**
+	 * Private note for a cart without shipping whose customer's address has
+	 * other tax rates than the price offered: the wallet asked for no
+	 * address before payment, so the order is kept at the offered price
+	 * (owner decision).
+	 */
+	public static function offeredPriceNote(): string {
+		return __( "ACTION REQUIRED: check tax. The customer's address is taxed differently from the price offered in express checkout; the order was kept at the offered price.", 'wallee-express-checkout' );
+	}
+
+	/**
 	 * The tax classes the snapshot's taxes depend on: the classes of its
 	 * lines; the standard class when it has fees (the snapshot does not keep
 	 * a fee's class; fees are added with the standard class by default); the

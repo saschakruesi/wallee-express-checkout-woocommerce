@@ -22,6 +22,8 @@ use Wallee\ExpressCheckout\Tests\Support\RecordingAdapter;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 use Wallee\ExpressCheckout\Tests\Unit\Http\ReturnHandlerTest;
 
+require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
+
 /**
  * @covers \Wallee\ExpressCheckout\Order\LinkScheduler
  * @covers \Wallee\ExpressCheckout\Order\CustomerDetails
@@ -45,6 +47,9 @@ class LinkSchedulerTest extends TestCase {
 
 	/** @var array[] Calls of the scheduler: order ID, delay, deduplicate. */
 	private $scheduled = array();
+
+	/** @var bool Whether taxes follow the customer's address. */
+	private $tax_follows = false;
 
 	protected function setUp(): void {
 		parent::setUp();
@@ -76,8 +81,9 @@ class LinkSchedulerTest extends TestCase {
 		};
 		Functions\when( 'WC' )->justReturn( $wc );
 
-		$this->scheduled  = array();
-		$this->repository = new FakeSessionRepository(
+		$this->scheduled   = array();
+		$this->tax_follows = false;
+		$this->repository  = new FakeSessionRepository(
 			CartSnapshotTest::data(),
 			array(
 				'state'          => 'processed',
@@ -112,7 +118,7 @@ class LinkSchedulerTest extends TestCase {
 
 		return new LinkScheduler(
 			$this->orders,
-			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, false ),
+			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, $this->tax_follows ),
 			new OrderLinker( $this->adapter ),
 			$this->repository,
 			function ( $order_id, $delay, $deduplicate ) {
@@ -459,6 +465,41 @@ class LinkSchedulerTest extends TestCase {
 		$this->assertSame( array(), $this->orders->failed );
 		$this->assertSame( 'wallee_7', $this->order->get_payment_method(), 'still linked' );
 		$this->assertFalse( CustomerDetails::checksPending( $this->order ) );
+	}
+
+	public function test_a_tax_difference_without_shipping_found_in_the_background_keeps_and_links_the_order() {
+		Functions\when( 'get_option' )->alias(
+			static function ( $name, $fallback = false ) {
+				if ( 'woocommerce_tax_based_on' === $name ) {
+					return 'shipping';
+				}
+
+				return 'woocommerce_shipping_tax_class' === $name ? 'inherit' : $fallback;
+			}
+		);
+		\WC_Tax::reset();
+		$data                               = CartSnapshotTest::data();
+		$data['items'][0]['needs_shipping'] = false;
+		$this->repository                   = new FakeSessionRepository(
+			$data,
+			array(
+				'state'    => 'processed',
+				'order_id' => 501,
+			)
+		);
+		$this->tax_follows                                         = true;
+		$this->order->meta['_wallee_ec_transaction_id']            = 629017977;
+		$this->order->meta[ CustomerDetails::META_CHECKS_PENDING ] = 'yes';
+		$this->api->transaction['shippingAddress']                 = array( 'country' => 'US' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( CustomerDetailsTest::TAX_KEPT_NOTE ), $this->order->notes );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'wallee_7', $this->order->get_payment_method(), 'still linked' );
+		$this->assertSame( '', FailedOrderSettlement::failedReason( $this->order ) );
+		$this->assertSame( '', $this->order->get_meta( '_wallee_ec_refund_required' ) );
+		$this->assertNotContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
 	}
 
 	public function test_admin_retry_needs_no_flag_and_no_transaction_meta() {
