@@ -1,0 +1,26 @@
+{
+	"name": "wallee/express-checkout",
+	"description": "wallee Express Checkout for WooCommerce",
+	"type": "project",
+	"license": "proprietary",
+	"require-dev": {
+		"phpunit/phpunit": "^9.6",
+		"brain/monkey": "^2.6",
+		"wp-coding-standards/wpcs": "^3.1",
+		"phpcompatibility/phpcompatibility-wp": "*",
+		"dealerdirect/phpcodesniffer-composer-installer": "^1.0"
+	},
+	"autoload-dev": {
+		"psr-4": {
+			"Wallee\\ExpressCheckout\\Tests\\": "tests/"
+		}
+	},
+	"config": {
+		"platform": {
+			"php": "7.4.33"
+		},
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true
+		}
+	}
+}
