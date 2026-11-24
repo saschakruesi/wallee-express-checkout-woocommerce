@@ -295,7 +295,10 @@ final class LinkScheduler {
 				$this->log( sprintf( 'Order %d: transaction not read (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
 			}
 			if ( null !== $record && null !== $collected && ! $collected['email'] ) {
-				return $this->failWithoutEmail( $record, $order, $collected['transaction_id'], $collected['state'] );
+				if ( $order->has_status( array( 'pending', 'on-hold' ) ) ) {
+					return $this->failWithoutEmail( $record, $order, $collected['transaction_id'], $collected['state'] );
+				}
+				$this->noteWithoutEmail( $order );
 			}
 			$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
 		}
@@ -315,8 +318,9 @@ final class LinkScheduler {
 	 * The owner-decided rule for a missing e-mail, applied in the background
 	 * as at the return: wallee gave no e-mail address once the transaction
 	 * could be read (it authorised after the customer's browser left), so
-	 * the order fails for `no_email` whatever the payment state, and its
-	 * money is settled like at the return (a reservation is voided, taken
+	 * an order still pending or on-hold fails for `no_email` whatever the
+	 * payment state, and its money is settled like at the return (a
+	 * reservation is voided, taken
 	 * money gets the refund note, an undecided payment is checked again).
 	 * The order is not linked.
 	 *
@@ -346,6 +350,23 @@ final class LinkScheduler {
 		}
 
 		return FailedOrderSettlement::OPEN !== $this->settlement->settle( $order, $transaction_id, $state );
+	}
+
+	/**
+	 * No e-mail address for an order that is no longer pending or on-hold
+	 * (for example processing or completed by the main plugin's webhook):
+	 * one private note, no status change, no void.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private function noteWithoutEmail( \WC_Order $order ): void {
+		$status = preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $order->get_status() ) );
+		$this->log( sprintf( 'Order %d: no e-mail address from wallee; order is %s, not failed.', $order->get_id(), $status ), 'warning' );
+		try {
+			$this->orders->addNoteOnce( $order, __( 'ACTION REQUIRED: no e-mail address received for this order.', 'wallee-express-checkout' ) );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Order %d: note not added (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
 	}
 
 	/**

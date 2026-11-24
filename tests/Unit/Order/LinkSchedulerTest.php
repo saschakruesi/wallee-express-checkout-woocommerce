@@ -292,6 +292,54 @@ class LinkSchedulerTest extends TestCase {
 		$this->assertCount( 1, $this->scheduled );
 	}
 
+	public function test_a_late_authorization_without_email_fails_an_on_hold_order() {
+		$this->late_authorization_without_email( 'AUTHORIZED' );
+		$this->order->status = 'on-hold';
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertContains( 'voidTransaction', $this->api->methods() );
+	}
+
+	/**
+	 * @dataProvider paid_statuses
+	 *
+	 * @param string $status Order status the main plugin's webhook set.
+	 */
+	public function test_a_paid_order_without_email_is_not_failed_and_gets_one_note( string $status ) {
+		$this->late_authorization_without_email( 'AUTHORIZED' );
+		$this->order->status = $status;
+
+		$this->scheduler()->run( 501 );
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( '', FailedOrderSettlement::failedReason( $this->order ) );
+		$this->assertSame( $status, $this->order->status, 'status unchanged' );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertNotSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame(
+			array( 'ACTION REQUIRED: no e-mail address received for this order.' ),
+			array_values(
+				array_filter(
+					$this->order->notes,
+					static function ( $note ) {
+						return false !== strpos( $note, 'e-mail' );
+					}
+				)
+			),
+			'one note'
+		);
+	}
+
+	public function paid_statuses(): array {
+		return array(
+			'processing' => array( 'processing' ),
+			'completed'  => array( 'completed' ),
+		);
+	}
+
 	public function test_the_background_fails_an_order_without_email_also_without_the_pending_mark() {
 		$this->orders->applied_email = '';
 
