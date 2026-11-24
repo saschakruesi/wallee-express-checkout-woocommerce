@@ -10,8 +10,8 @@
  * WC tested up to:   11.0
  * Text Domain:       wallee-express-checkout
  * Domain Path:       /languages
- * License:           GPL-2.0-or-later
- * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
+ * License:           Apache-2.0
+ * License URI:       http://www.apache.org/licenses/LICENSE-2.0
  *
  * @package Wallee\ExpressCheckout
  */

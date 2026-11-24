@@ -4,7 +4,7 @@ Tested up to: 7.1
 Requires PHP: 7.4
 Stable tag: 0.1.0
 Requires Plugins: woocommerce
-License: GPL-2.0-or-later
+License: Apache-2.0
 
 Express checkout buttons for WooCommerce, powered by wallee. Prototype.
 
