@@ -68,6 +68,64 @@ class EligibilityTest extends TestCase {
 		$this->assertSame( 'not_configured', $e->reason( $this->snapshot() ) );
 	}
 
+	private function virtual_only(): CartSnapshot {
+		return $this->snapshot( array( 'items' => array( CartSnapshotTest::item( array( 'needs_shipping' => false ) ) ) ) );
+	}
+
+	public function test_virtual_only_is_refused() {
+		$e = new Eligibility( true, true, false );
+
+		$this->assertSame( 'no_shipping_needed', $e->reason( $this->virtual_only() ) );
+	}
+
+	public function test_virtual_only_with_the_allow_flag_is_eligible() {
+		$e = new Eligibility( true, true, false, true );
+
+		$this->assertNull( $e->reason( $this->virtual_only() ) );
+	}
+
+	public function test_mixed_cart_with_one_shippable_item_is_eligible() {
+		$e     = new Eligibility( true, true, false );
+		$items = array(
+			CartSnapshotTest::item( array( 'needs_shipping' => false ) ),
+			CartSnapshotTest::item(
+				array(
+					'key'            => 'b',
+					'needs_shipping' => true,
+				)
+			),
+		);
+
+		$this->assertNull( $e->reason( $this->snapshot( array( 'items' => $items ) ) ) );
+	}
+
+	public function test_no_shipping_needed_comes_after_empty_and_before_the_others() {
+		$e    = new Eligibility( false, false, false );
+		$item = CartSnapshotTest::item(
+			array(
+				'needs_shipping'  => false,
+				'is_subscription' => true,
+			)
+		);
+
+		$this->assertSame( 'empty', $e->reason( $this->snapshot( array( 'items' => array() ) ) ) );
+		$this->assertSame( 'no_shipping_needed', $e->reason( $this->snapshot( array( 'items' => array( $item ) ) ) ) );
+	}
+
+	public function test_from_environment_applies_the_filter() {
+		\Brain\Monkey\setUp();
+		try {
+			\Brain\Monkey\Functions\when( 'get_option' )->justReturn( 'yes' );
+			\Brain\Monkey\Functions\when( 'is_user_logged_in' )->justReturn( false );
+			$this->assertSame( 'no_shipping_needed', Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ) );
+
+			\Brain\Monkey\Filters\expectApplied( 'wallee_ec_allow_without_shipping' )->andReturn( true );
+			$this->assertNull( Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ) );
+		} finally {
+			\Brain\Monkey\tearDown();
+		}
+	}
+
 	public function test_reason_priority_empty_first() {
 		$e = new Eligibility( false, false, false );
 
