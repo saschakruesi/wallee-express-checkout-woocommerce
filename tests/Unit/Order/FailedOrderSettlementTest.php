@@ -156,8 +156,32 @@ class FailedOrderSettlementTest extends TestCase {
 		);
 	}
 
-	public function test_an_authorization_of_an_order_that_is_no_longer_failed_is_not_voided() {
-		$this->order->status = 'processing';
+	public function test_an_authorization_of_an_order_revived_to_on_hold_by_a_payment_update_is_voided() {
+		$this->order->status = 'on-hold';
+		FailedOrderSettlement::noteRevival( 501, 'failed', 'on-hold', $this->order );
+		$settlement = $this->settlement();
+
+		$this->assertSame( FailedOrderSettlement::RELEASED, $settlement->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertSame( FailedOrderSettlement::RELEASED, $settlement->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ), 'repeated call' );
+
+		$this->assertSame( array( array( 'voidTransaction', self::TRANSACTION ) ), $this->voids(), 'one void request' );
+		$this->assertSame( array( 501 ), $this->claims );
+		$this->assertCount( 2, $this->order->notes, 'revival note and void note' );
+		$this->assertStringContainsString( 'void of transaction 629017977 was requested automatically', $this->order->notes[1] );
+	}
+
+	/**
+	 * @dataProvider changed_statuses
+	 *
+	 * @param string $revived_to Status the revival set ('' if none was recorded).
+	 * @param string $status     Current order status.
+	 */
+	public function test_an_authorization_of_an_order_whose_status_was_changed_since_it_failed_is_not_voided( string $revived_to, string $status ) {
+		if ( '' !== $revived_to ) {
+			FailedOrderSettlement::noteRevival( 501, 'failed', $revived_to, $this->order );
+			$this->order->notes = array();
+		}
+		$this->order->status = $status;
 		$settlement          = $this->settlement();
 
 		$this->assertSame( FailedOrderSettlement::RESERVED, $settlement->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
@@ -168,6 +192,18 @@ class FailedOrderSettlementTest extends TestCase {
 		$this->assertCount( 1, $this->order->notes );
 		$this->assertStringStartsWith( 'ACTION REQUIRED: wallee transaction 629017977 is AUTHORIZED (money reserved), but this order failed (coupon_invalid) and its status was changed since', $this->order->notes[0] );
 		$this->assertStringContainsString( 'not voided automatically', $this->order->notes[0] );
+	}
+
+	public function changed_statuses(): array {
+		return array(
+			'revived to processing'                => array( 'processing', 'processing' ),
+			'revived to completed'                 => array( 'completed', 'completed' ),
+			'revived to on-hold, then processing'  => array( 'on-hold', 'processing' ),
+			'revived to on-hold, then completed'   => array( 'on-hold', 'completed' ),
+			'revived to processing, then on-hold'  => array( 'processing', 'on-hold' ),
+			'on-hold without a recorded revival'   => array( '', 'on-hold' ),
+			'processing without a recorded revival' => array( '', 'processing' ),
+		);
 	}
 
 	/**
@@ -325,6 +361,8 @@ class FailedOrderSettlementTest extends TestCase {
 		$this->assertStringStartsWith( 'ACTION REQUIRED:', $this->order->notes[0] );
 		$this->assertStringContainsString( 'coupon_invalid', $this->order->notes[0] );
 		$this->assertStringContainsString( 'on-hold', $this->order->notes[0] );
+		$this->assertSame( 'on-hold', $this->order->get_meta( FailedOrderSettlement::META_REVIVED_TO ), 'revival status recorded' );
+		$this->assertSame( 1, $this->order->meta_saves, 'and saved' );
 	}
 
 	public function test_a_revival_note_that_cannot_be_added_never_breaks_the_status_change() {

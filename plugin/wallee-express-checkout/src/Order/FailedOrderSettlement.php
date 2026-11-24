@@ -21,13 +21,15 @@ defined( 'ABSPATH' ) || exit;
  *
  * - AUTHORIZED (reserved): a void is requested once per order, through the
  *   add-on's API client (`POST /v2.0/payment/transactions/{id}/void-online`),
- *   and only while the order is still failed. "Once" is an atomic claim in
+ *   and only while the order is still failed or in the on-hold status a
+ *   payment update revived it to (the main plugin's webhook). "Once" is an atomic claim in
  *   the database, so two requests (background job and admin view) cannot
  *   both send it. A request wallee accepts gets a private note; a failure
  *   gets an "ACTION REQUIRED" note to void the transaction manually, or to
  *   refund it when the transaction has been completed meanwhile. An order
- *   whose status was changed since it failed is not voided; it gets an
- *   "ACTION REQUIRED" note.
+ *   that is processing or completed, or whose status differs from the one
+ *   a payment update revived it to (changed by the merchant), is not
+ *   voided; it gets an "ACTION REQUIRED" note.
  * - COMPLETED or FULFILL (taken): never touched; one "ACTION REQUIRED" note
  *   says a refund is needed.
  * - PROCESSING, CONFIRMED, PENDING, CREATE or unknown (undecided): nothing
@@ -54,6 +56,11 @@ final class FailedOrderSettlement {
 	 * Order meta: the refund note was added.
 	 */
 	const META_REFUND = '_wallee_ec_refund_required';
+
+	/**
+	 * Order meta: the status a payment update revived the failed order to.
+	 */
+	const META_REVIVED_TO = '_wallee_ec_revived_to';
 
 	/**
 	 * A void of the reservation was requested; the customer is not charged.
@@ -188,7 +195,7 @@ final class FailedOrderSettlement {
 			if ( '' !== $void ) {
 				return 'requested' === $void ? self::RELEASED : self::RESERVED;
 			}
-			if ( ! $order->has_status( 'failed' ) ) {
+			if ( ! self::voidable( $order ) ) {
 				return $this->skipVoid( $order, $transaction_id, $reason );
 			}
 
@@ -216,6 +223,21 @@ final class FailedOrderSettlement {
 	}
 
 	/**
+	 * Whether a reservation of the order may be voided automatically: the
+	 * order is still failed, or it is on-hold because a payment update
+	 * revived it to on-hold (and nobody changed it since).
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private static function voidable( \WC_Order $order ): bool {
+		if ( $order->has_status( 'failed' ) ) {
+			return true;
+		}
+
+		return $order->has_status( 'on-hold' ) && 'on-hold' === (string) $order->get_meta( self::META_REVIVED_TO );
+	}
+
+	/**
 	 * Reads the transaction of a failed order and settles it.
 	 *
 	 * @param \WC_Order $order Order marked with markFailed().
@@ -240,7 +262,9 @@ final class FailedOrderSettlement {
 	 * `woocommerce_order_status_changed`: a failed express order that failed
 	 * for an owner-decided reason and is then set to any status other than
 	 * failed, cancelled or refunded (for example on-hold or processing by the main
-	 * plugin's webhook) gets an "ACTION REQUIRED" note.
+	 * plugin's webhook) gets an "ACTION REQUIRED" note. The new status is
+	 * recorded, so settle() can still void a reservation of an order the
+	 * webhook revived to on-hold.
 	 *
 	 * @param mixed $order_id Order ID.
 	 * @param mixed $from     Previous status.
@@ -258,28 +282,44 @@ final class FailedOrderSettlement {
 		if ( '' === $reason ) {
 			return;
 		}
+		$status = (string) preg_replace( '/[^a-z0-9_\-]/', '', strtolower( $to ) );
+		try {
+			$order->update_meta_data( self::META_REVIVED_TO, $status );
+			$order->save_meta_data();
+		} catch ( \Throwable $e ) {
+			self::logGuarded( sprintf( 'Order %d: revival status not saved (%s).', $order->get_id(), get_class( $e ) ) );
+		}
 		try {
 			$order->add_order_note(
 				sprintf(
 					/* translators: 1: reason code, 2: new order status. */
 					__( 'ACTION REQUIRED: this express order failed (%1$s), but its status was then set to %2$s (for example by a payment update). Check the wallee transaction before shipping; void or refund it in the wallee portal if the order must not be delivered.', 'wallee-express-checkout' ),
 					$reason,
-					preg_replace( '/[^a-z0-9_\-]/', '', strtolower( $to ) )
+					$status
 				)
 			);
 		} catch ( \Throwable $e ) {
-			// Runs inside the main plugin's webhook: never let the note break it.
-			try {
-				Plugin::adapter()->log( sprintf( 'Order %d: revival note not added (%s).', $order->get_id(), get_class( $e ) ), 'error' );
-			} catch ( \Throwable $ignored ) {
-				unset( $ignored );
-			}
+			self::logGuarded( sprintf( 'Order %d: revival note not added (%s).', $order->get_id(), get_class( $e ) ) );
 		}
 	}
 
 	/**
-	 * An AUTHORIZED transaction of an order whose status was changed since it
-	 * failed (for example revived by a payment update) is not voided: one
+	 * Logs an error from inside the main plugin's webhook: never lets the
+	 * logging break it.
+	 *
+	 * @param string $message Message: IDs and class names only.
+	 */
+	private static function logGuarded( string $message ): void {
+		try {
+			Plugin::adapter()->log( $message, 'error' );
+		} catch ( \Throwable $ignored ) {
+			unset( $ignored );
+		}
+	}
+
+	/**
+	 * An AUTHORIZED transaction of an order that is not voidable() (processing,
+	 * completed, or changed since it failed or was revived) is not voided: one
 	 * "ACTION REQUIRED" note, recorded so it is not repeated.
 	 *
 	 * @param \WC_Order $order          Order.
@@ -289,7 +329,7 @@ final class FailedOrderSettlement {
 	 */
 	private function skipVoid( \WC_Order $order, int $transaction_id, string $reason ): string {
 		$status = preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $order->get_status() ) );
-		$this->log( sprintf( 'Order %d: transaction %d is AUTHORIZED, but the order is no longer failed (status %s); not voided.', $order->get_id(), $transaction_id, $status ), 'warning' );
+		$this->log( sprintf( 'Order %d: transaction %d is AUTHORIZED, but the order status %s does not allow an automatic void; not voided.', $order->get_id(), $transaction_id, $status ), 'warning' );
 		$this->note(
 			$order,
 			sprintf(

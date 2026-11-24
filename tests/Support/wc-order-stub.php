@@ -28,6 +28,7 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $meta                 = array();
 		public $notes                = array();
 		public $saves                = 0;
+		public $meta_saves           = 0;
 		public $currency             = '';
 		public $customer_id          = 0;
 		public $products             = array();
@@ -159,6 +160,13 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 			}
 			++$this->saves;
 			return $this->id;
+		}
+
+		public function save_meta_data() {
+			if ( null !== $this->save_error ) {
+				throw $this->save_error;
+			}
+			++$this->meta_saves;
 		}
 
 		public function update_status( $status, $note = '' ) {
