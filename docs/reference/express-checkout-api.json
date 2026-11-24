@@ -1,0 +1,1583 @@
+{
+  "_note": "Excerpt of https://app-wallee.com/api/spec3.json (v2.0): the three express-checkout paths and the schemas they reference. Transaction is stubbed.",
+  "servers": [
+    {
+      "url": "https://app-wallee.com/api/v2.0"
+    }
+  ],
+  "securitySchemes": {
+    "cookieAuth": {
+      "type": "apiKey",
+      "name": "session",
+      "in": "cookie"
+    },
+    "jwtAuth": {
+      "type": "http",
+      "scheme": "bearer",
+      "bearerFormat": "JWT"
+    },
+    "macAuth": {
+      "type": "apiKey",
+      "name": "x-mac-value",
+      "in": "header"
+    }
+  },
+  "paths": {
+    "/express-checkout/session": {
+      "get": {
+        "tags": [
+          "ExpressCheckoutSession"
+        ],
+        "summary": "Get Express Checkout Session details",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#getExpressCheckoutSession"
+        },
+        "operationId": "getExpressCheckoutSession",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "space",
+            "in": "header",
+            "description": "Specifies the ID of the space the operation should be executed in.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpressCheckoutSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "406": {
+            "$ref": "#/components/responses/406"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/5XX"
+          },
+          "default": {
+            "$ref": "#/components/responses/default"
+          }
+        }
+      }
+    },
+    "/express-checkout/session/create": {
+      "post": {
+        "tags": [
+          "ExpressCheckoutSession"
+        ],
+        "summary": "Create a new Express Checkout Session",
+        "description": "Creates a new Express Checkout session and returns both sessionId and sessionToken. Use the sessionToken to render the wallet widget, and persist the sessionId for the later process call.",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#postExpressCheckoutSessionCreate"
+        },
+        "operationId": "postExpressCheckoutSessionCreate",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "header",
+            "description": "Specifies the ID of the space the operation should be executed in.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpressCheckoutSession.Create"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpressCheckoutSessionCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "406": {
+            "$ref": "#/components/responses/406"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/5XX"
+          },
+          "default": {
+            "$ref": "#/components/responses/default"
+          }
+        }
+      }
+    },
+    "/express-checkout/session/process": {
+      "post": {
+        "tags": [
+          "ExpressCheckoutSession"
+        ],
+        "summary": "Process Express Checkout Session",
+        "description": "Processes the approved session and returns the redirect URL to continue checkout. Customer language and time zone are automatically derived from the HTTP request when available.",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#postExpressCheckoutSessionProcess"
+        },
+        "operationId": "postExpressCheckoutSessionProcess",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "header",
+            "description": "Specifies the ID of the space the operation should be executed in.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpressCheckoutSessionProcessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpressCheckoutSessionProcessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "406": {
+            "$ref": "#/components/responses/406"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/5XX"
+          },
+          "default": {
+            "$ref": "#/components/responses/default"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Address": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_address"
+        },
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "The two-letter country code (ISO 3166 format).",
+            "readOnly": true,
+            "title": "Country"
+          },
+          "mobilePhoneNumber": {
+            "type": "string",
+            "description": "The phone number of a mobile phone.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Mobile Phone Number"
+          },
+          "gender": {
+            "$ref": "#/components/schemas/Gender"
+          },
+          "organizationName": {
+            "type": "string",
+            "description": "The organization's name.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Organization Name"
+          },
+          "city": {
+            "type": "string",
+            "description": "The city, town or village.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "City"
+          },
+          "commercialRegisterNumber": {
+            "type": "string",
+            "description": "The commercial registration number of the organization.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Commercial Register Number"
+          },
+          "socialSecurityNumber": {
+            "type": "string",
+            "description": "The social security number.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Social Security Number"
+          },
+          "givenName": {
+            "type": "string",
+            "description": "The given or first name.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Given Name"
+          },
+          "postcode": {
+            "type": "string",
+            "description": "The postal code, also known as ZIP, postcode, etc.",
+            "maxLength": 40,
+            "readOnly": true,
+            "title": "Postcode"
+          },
+          "legalOrganizationForm": {
+            "$ref": "#/components/schemas/LegalOrganizationForm"
+          },
+          "salesTaxNumber": {
+            "type": "string",
+            "description": "The sales tax number of the organization.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Sales Tax Number"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "format": "date",
+            "description": "The date of birth.",
+            "readOnly": true,
+            "title": "Date Of Birth"
+          },
+          "dependentLocality": {
+            "type": "string",
+            "description": "The dependent locality which is a sub-division of the state.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Dependent Locality"
+          },
+          "emailAddress": {
+            "type": "string",
+            "description": "The email address.",
+            "maxLength": 254,
+            "readOnly": true,
+            "title": "Email Address"
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "The phone number.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Phone Number"
+          },
+          "sortingCode": {
+            "type": "string",
+            "description": "The sorting code identifying the post office where the PO Box is located.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Sorting Code"
+          },
+          "street": {
+            "type": "string",
+            "description": "The street or PO Box.",
+            "maxLength": 300,
+            "readOnly": true,
+            "title": "Street"
+          },
+          "familyName": {
+            "type": "string",
+            "description": "The family or last name.",
+            "maxLength": 100,
+            "readOnly": true,
+            "title": "Family Name"
+          },
+          "postalState": {
+            "type": "string",
+            "description": "The name of the region, typically a state, county, province or prefecture.",
+            "readOnly": true,
+            "title": "State"
+          },
+          "salutation": {
+            "type": "string",
+            "description": "The salutation e.g. Mrs, Mr, Dr.",
+            "maxLength": 20,
+            "readOnly": true,
+            "title": "Salutation"
+          }
+        },
+        "title": "Address",
+        "x-model-type": "READ"
+      },
+      "Address.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_address_create"
+        },
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "The country is represented with a two-letter code (ISO 3166-1 alpha-2 standard) - for example, CH for Switzerland.",
+            "title": "Country"
+          },
+          "mobilePhoneNumber": {
+            "type": "string",
+            "description": "The phone number of a mobile phone.",
+            "maxLength": 100,
+            "title": "Mobile Phone Number"
+          },
+          "gender": {
+            "$ref": "#/components/schemas/Gender"
+          },
+          "organizationName": {
+            "type": "string",
+            "description": "The organization's name.",
+            "maxLength": 100,
+            "title": "Organization Name"
+          },
+          "city": {
+            "type": "string",
+            "description": "The city, town or village.",
+            "maxLength": 100,
+            "title": "City"
+          },
+          "commercialRegisterNumber": {
+            "type": "string",
+            "description": "The commercial registration number of the organization.",
+            "maxLength": 100,
+            "title": "Commercial Register Number"
+          },
+          "socialSecurityNumber": {
+            "type": "string",
+            "description": "The social security number.",
+            "maxLength": 100,
+            "title": "Social Security Number"
+          },
+          "givenName": {
+            "type": "string",
+            "description": "The given or first name.",
+            "maxLength": 100,
+            "title": "Given Name"
+          },
+          "postcode": {
+            "type": "string",
+            "description": "The postal code, also known as ZIP, postcode, etc.",
+            "maxLength": 40,
+            "title": "Postcode"
+          },
+          "legalOrganizationForm": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The legal form of the organization.",
+            "title": "Legal Organization Form"
+          },
+          "salesTaxNumber": {
+            "type": "string",
+            "description": "The sales tax number of the organization.",
+            "maxLength": 100,
+            "title": "Sales Tax Number"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "format": "date",
+            "description": "The date of birth.",
+            "title": "Date Of Birth"
+          },
+          "dependentLocality": {
+            "type": "string",
+            "description": "The dependent locality which is a sub-division of the state.",
+            "maxLength": 100,
+            "title": "Dependent Locality"
+          },
+          "emailAddress": {
+            "type": "string",
+            "description": "The email address.",
+            "maxLength": 254,
+            "title": "Email Address"
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "The phone number.",
+            "maxLength": 100,
+            "title": "Phone Number"
+          },
+          "sortingCode": {
+            "type": "string",
+            "description": "The sorting code identifying the post office where the PO Box is located.",
+            "maxLength": 100,
+            "title": "Sorting Code"
+          },
+          "street": {
+            "type": "string",
+            "description": "The street or PO Box.",
+            "maxLength": 300,
+            "title": "Street"
+          },
+          "familyName": {
+            "type": "string",
+            "description": "The family or last name.",
+            "maxLength": 100,
+            "title": "Family Name"
+          },
+          "postalState": {
+            "type": "string",
+            "description": "The name of the region, typically a state, county, province or prefecture.",
+            "title": "State"
+          },
+          "salutation": {
+            "type": "string",
+            "description": "The salutation e.g. Mrs, Mr, Dr.",
+            "maxLength": 20,
+            "title": "Salutation"
+          }
+        },
+        "title": "Address in Create State",
+        "x-model-type": "CREATE"
+      },
+      "ChargeAttemptEnvironment": {
+        "type": "string",
+        "enum": [
+          "PRODUCTION",
+          "TEST"
+        ],
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_chargeattemptenvironment"
+        },
+        "title": "Charge Attempt Environment",
+        "x-model-type": "ENUM"
+      },
+      "ExpressCheckoutSession": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsession"
+        },
+        "properties": {
+          "merchantShippingCallbackUrl": {
+            "type": "string",
+            "description": "The URL to fetch the shipping options from.",
+            "readOnly": true,
+            "title": "Merchant Shipping Callback Url"
+          },
+          "authorizationAmount": {
+            "type": "number",
+            "description": "The total amount of the session.",
+            "readOnly": true,
+            "title": "Authorization Amount"
+          },
+          "walletType": {
+            "$ref": "#/components/schemas/ExpressCheckoutWalletType"
+          },
+          "plannedPurgeDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The date and time when the object is planned to be permanently removed. If the value is empty, the object will not be removed.",
+            "readOnly": true,
+            "title": "Planned Purge Date"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "Customer time zone for presentation and cutoffs (same semantics as on Transaction).",
+            "readOnly": true,
+            "title": "Time Zone"
+          },
+          "language": {
+            "type": "string",
+            "description": "Preferred language for customer-facing content (same semantics as on Transaction).",
+            "readOnly": true,
+            "title": "Language"
+          },
+          "createdOn": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The date and time when the session was created.",
+            "readOnly": true,
+            "title": "Created On"
+          },
+          "lineItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineItem"
+            },
+            "readOnly": true,
+            "title": "The selected products"
+          },
+          "linkedSpaceId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The spaceId linked to the entity.",
+            "readOnly": true,
+            "title": "Linked Space ID"
+          },
+          "merchantRedirectUrl": {
+            "type": "string",
+            "description": "The base URL on the merchant shop used to create the order.",
+            "readOnly": true,
+            "title": "Merchant Redirect Url"
+          },
+          "metaData": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "title": "Meta Data"
+          },
+          "authorizationEnvironment": {
+            "$ref": "#/components/schemas/ChargeAttemptEnvironment"
+          },
+          "failureReason": {
+            "$ref": "#/components/schemas/FailureReason"
+          },
+          "shippingAddress": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "currency": {
+            "type": "string",
+            "description": "The currency of the session.",
+            "readOnly": true,
+            "title": "Currency"
+          },
+          "billingAddress": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Id of the entity.",
+            "readOnly": true,
+            "title": "ID"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExpressCheckoutSessionState"
+          },
+          "linkedTransaction": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The payment transaction this object is linked to.",
+            "readOnly": true,
+            "title": "Linked Transaction"
+          },
+          "shippingOptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExpressCheckoutShippingOption"
+            },
+            "readOnly": true,
+            "title": "The available shipping Options."
+          },
+          "transaction": {
+            "$ref": "#/components/schemas/Transaction"
+          }
+        },
+        "title": "Express Checkout Session",
+        "x-expandable-fields": [
+          "billingAddress",
+          "lineItems",
+          "shippingAddress",
+          "transaction"
+        ],
+        "x-model-type": "READ"
+      },
+      "ExpressCheckoutSession.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsession_create"
+        },
+        "properties": {
+          "lineItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineItem"
+            },
+            "title": "The selected products"
+          },
+          "merchantShippingCallbackUrl": {
+            "type": "string",
+            "description": "The URL to fetch the shipping options from.",
+            "title": "Merchant Shipping Callback Url"
+          },
+          "merchantRedirectUrl": {
+            "type": "string",
+            "description": "The base URL on the merchant shop used to create the order.",
+            "title": "Merchant Redirect Url"
+          },
+          "authorizationEnvironment": {
+            "$ref": "#/components/schemas/ChargeAttemptEnvironment"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "Customer time zone for presentation and cutoffs (same semantics as on Transaction).",
+            "title": "Time Zone"
+          },
+          "currency": {
+            "type": "string",
+            "description": "The currency of the session.",
+            "title": "Currency"
+          },
+          "language": {
+            "type": "string",
+            "description": "Preferred language for customer-facing content (same semantics as on Transaction).",
+            "title": "Language"
+          }
+        },
+        "required": [
+          "authorizationEnvironment",
+          "currency",
+          "lineItems",
+          "merchantRedirectUrl"
+        ],
+        "title": "Express Checkout Session . Create",
+        "x-expandable-fields": [
+          "lineItems"
+        ],
+        "x-model-type": "CREATE"
+      },
+      "ExpressCheckoutSessionCreateResponse": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsessioncreateresponse"
+        },
+        "properties": {
+          "sessionToken": {
+            "type": "string",
+            "description": "Security token used to render the widget and continue the checkout flow.",
+            "readOnly": true,
+            "title": "Session Token"
+          },
+          "sessionId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Identifier of the newly created Express Checkout session.",
+            "readOnly": true,
+            "title": "Session Id"
+          }
+        },
+        "title": "Express Checkout Session Create Response",
+        "x-model-type": "READ"
+      },
+      "ExpressCheckoutSessionProcessRequest": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsessionprocessrequest"
+        },
+        "properties": {
+          "successUrl": {
+            "type": "string",
+            "description": "Mandatory URL to redirect the customer to after a successful payment for Express Checkout.",
+            "title": "Success Url"
+          },
+          "sessionId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Express Checkout session identifier returned by create-session.",
+            "title": "Session Id"
+          },
+          "merchantReference": {
+            "type": "string",
+            "description": "Mandatory merchant order identifier used as merchantReference on the created transaction.",
+            "title": "Merchant Reference"
+          },
+          "failureUrl": {
+            "type": "string",
+            "description": "Mandatory URL to redirect the customer to after a failed payment for Express Checkout.",
+            "title": "Failure Url"
+          }
+        },
+        "required": [
+          "failureUrl",
+          "merchantReference",
+          "sessionId",
+          "successUrl"
+        ],
+        "title": "Express Checkout Session Process Request",
+        "x-model-type": "CREATE"
+      },
+      "ExpressCheckoutSessionProcessResponse": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsessionprocessresponse"
+        },
+        "properties": {
+          "redirectUrl": {
+            "type": "string",
+            "description": "URL to which the shop must redirect the customer to continue the flow.",
+            "readOnly": true,
+            "title": "Redirect Url"
+          }
+        },
+        "title": "Express Checkout Session Process Response",
+        "x-model-type": "READ"
+      },
+      "ExpressCheckoutSessionState": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "PROCESSING",
+          "AUTHORIZED",
+          "FAILED"
+        ],
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutsessionstate"
+        },
+        "title": "Express Checkout Session State",
+        "x-model-type": "ENUM"
+      },
+      "ExpressCheckoutShippingOption": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutshippingoption"
+        },
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Description of the option",
+            "readOnly": true,
+            "title": "Description"
+          },
+          "taxes": {
+            "type": "array",
+            "description": "A set of tax lines, each of which specifies a tax applied to this shipping option.",
+            "items": {
+              "$ref": "#/components/schemas/Tax"
+            },
+            "readOnly": true,
+            "title": "Taxes",
+            "uniqueItems": true
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency code (ISO-4217) of this shipping option.",
+            "readOnly": true,
+            "title": "Currency"
+          },
+          "id": {
+            "type": "string",
+            "description": "Identifier of the option.",
+            "readOnly": true,
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "description": "Label of the option.",
+            "readOnly": true,
+            "title": "Label"
+          },
+          "amountIncludingTax": {
+            "type": "number",
+            "description": "Total cost of this shipping option, including taxes.",
+            "readOnly": true,
+            "title": "Amount Including Tax"
+          },
+          "selected": {
+            "type": "boolean",
+            "description": "Whether it was the option selected by the customer.",
+            "readOnly": true,
+            "title": "Selected"
+          }
+        },
+        "title": "Express Checkout Shipping Option",
+        "x-model-type": "READ"
+      },
+      "ExpressCheckoutWalletType": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_expresscheckoutwallettype"
+        },
+        "properties": {
+          "name": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The localized name of the object.",
+            "readOnly": true,
+            "title": "Name"
+          },
+          "description": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The localized description of the object.",
+            "readOnly": true,
+            "title": "Description"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A unique identifier for the object.",
+            "readOnly": true,
+            "title": "ID"
+          }
+        },
+        "title": "Express Checkout Wallet Type",
+        "x-expandable-fields": [
+          "description",
+          "name"
+        ],
+        "x-model-type": "READ"
+      },
+      "FailureCategory": {
+        "type": "string",
+        "enum": [
+          "TEMPORARY_ISSUE",
+          "INTERNAL",
+          "END_USER",
+          "CONFIGURATION",
+          "DEVELOPER"
+        ],
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_failurecategory"
+        },
+        "title": "Failure Category",
+        "x-model-type": "ENUM"
+      },
+      "FailureReason": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_failurereason"
+        },
+        "properties": {
+          "name": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The localized name of the object.",
+            "readOnly": true,
+            "title": "Name"
+          },
+          "description": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The localized description of the object.",
+            "readOnly": true,
+            "title": "Description"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A unique identifier for the object.",
+            "readOnly": true,
+            "title": "ID"
+          },
+          "category": {
+            "$ref": "#/components/schemas/FailureCategory"
+          }
+        },
+        "title": "Failure Reason",
+        "x-expandable-fields": [
+          "description",
+          "name"
+        ],
+        "x-model-type": "READ"
+      },
+      "Gender": {
+        "type": "string",
+        "enum": [
+          "MALE",
+          "FEMALE"
+        ],
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_gender"
+        },
+        "title": "Gender",
+        "x-model-type": "ENUM"
+      },
+      "LegalOrganizationForm": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_legalorganizationform"
+        },
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "The two-letter code of the country the legal organization form is used in (ISO 3166-1 alpha-2 format).",
+            "readOnly": true,
+            "title": "Country"
+          },
+          "shortcut": {
+            "type": "array",
+            "description": "The localized shortcuts of the legal organization form.",
+            "items": {
+              "$ref": "#/components/schemas/LocalizedString"
+            },
+            "readOnly": true,
+            "title": "Shortcut",
+            "uniqueItems": true
+          },
+          "englishDescription": {
+            "type": "string",
+            "description": "The English name of the legal organization form.",
+            "readOnly": true,
+            "title": "English Description"
+          },
+          "description": {
+            "type": "array",
+            "description": "The localized descriptions of the legal organization form.",
+            "items": {
+              "$ref": "#/components/schemas/LocalizedString"
+            },
+            "readOnly": true,
+            "title": "Description",
+            "uniqueItems": true
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A unique identifier for the object.",
+            "readOnly": true,
+            "title": "ID"
+          }
+        },
+        "title": "Legal Organization Form",
+        "x-model-type": "READ"
+      },
+      "LineItem": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitem"
+        },
+        "properties": {
+          "taxAmountPerUnit": {
+            "type": "number",
+            "description": "The calculated tax amount per unit.",
+            "readOnly": true,
+            "title": "Tax Amount Per Unit"
+          },
+          "undiscountedAmountExcludingTax": {
+            "type": "number",
+            "description": "The line item price with discounts not applied, excluding taxes.",
+            "readOnly": true,
+            "title": "Undiscounted Amount Excluding Tax"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "The number of items that were purchased.",
+            "readOnly": true,
+            "title": "Quantity"
+          },
+          "undiscountedUnitPriceIncludingTax": {
+            "type": "number",
+            "description": "The calculated price per unit with discounts not applied, including taxes.",
+            "readOnly": true,
+            "title": "Undiscounted Unit Price Including Tax"
+          },
+          "amountExcludingTax": {
+            "type": "number",
+            "description": "The line item price with discounts applied, excluding taxes.",
+            "readOnly": true,
+            "title": "Amount Excluding Tax"
+          },
+          "undiscountedAmountIncludingTax": {
+            "type": "number",
+            "description": "The line item price with discounts not applied, including taxes.",
+            "readOnly": true,
+            "title": "Undiscounted Amount Including Tax"
+          },
+          "taxes": {
+            "type": "array",
+            "description": "A set of tax lines, each of which specifies a tax applied to the item.",
+            "items": {
+              "$ref": "#/components/schemas/Tax"
+            },
+            "readOnly": true,
+            "title": "Taxes",
+            "uniqueItems": true
+          },
+          "type": {
+            "$ref": "#/components/schemas/LineItemType"
+          },
+          "unitPriceIncludingTax": {
+            "type": "number",
+            "description": "The calculated price per unit with discounts applied, including taxes.",
+            "readOnly": true,
+            "title": "Unit Price Including Tax"
+          },
+          "discountExcludingTax": {
+            "type": "number",
+            "description": "The discount allocated to the item, excluding taxes.",
+            "readOnly": true,
+            "title": "Discount Excluding Tax"
+          },
+          "shippingRequired": {
+            "type": "boolean",
+            "description": "Whether the item required shipping.",
+            "readOnly": true,
+            "title": "Shipping Required"
+          },
+          "unitPriceExcludingTax": {
+            "type": "number",
+            "description": "The calculated price per unit with discounts applied, excluding taxes.",
+            "readOnly": true,
+            "title": "Unit Price Excluding Tax"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the product, ideally in the customer's language.",
+            "maxLength": 150,
+            "minLength": 1,
+            "readOnly": true,
+            "title": "Name"
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LineItemAttribute"
+            },
+            "description": "A map of custom information for the item.",
+            "readOnly": true,
+            "title": "Attributes"
+          },
+          "undiscountedUnitPriceExcludingTax": {
+            "type": "number",
+            "description": "The calculated price per unit with discounts not applied, excluding taxes.",
+            "readOnly": true,
+            "title": "Undiscounted Unit Price Excluding Tax"
+          },
+          "amountIncludingTax": {
+            "type": "number",
+            "description": "The line item price with discounts applied, including taxes.",
+            "readOnly": true,
+            "title": "Amount Including Tax"
+          },
+          "discountIncludingTax": {
+            "type": "number",
+            "description": "The discount allocated to the item, including taxes.",
+            "readOnly": true,
+            "title": "Discount Including Tax"
+          },
+          "sku": {
+            "type": "string",
+            "description": "The SKU (stock-keeping unit) of the product.",
+            "maxLength": 200,
+            "readOnly": true,
+            "title": "SKU"
+          },
+          "taxAmount": {
+            "type": "number",
+            "description": "The sum of all taxes applied to the item.",
+            "readOnly": true,
+            "title": "Tax Amount"
+          },
+          "aggregatedTaxRate": {
+            "type": "number",
+            "description": "The total tax rate applied to the item, calculated from the rates of all tax lines.",
+            "readOnly": true,
+            "title": "Aggregated Tax Rate"
+          },
+          "uniqueId": {
+            "type": "string",
+            "description": "The unique identifier of the line item within the set of line items.",
+            "maxLength": 200,
+            "readOnly": true,
+            "title": "Unique ID"
+          }
+        },
+        "title": "Line Item",
+        "x-model-type": "READ"
+      },
+      "LineItem.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitem_create"
+        },
+        "properties": {
+          "shippingRequired": {
+            "type": "boolean",
+            "description": "Whether the item required shipping.",
+            "title": "Shipping Required"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "The number of items that were purchased.",
+            "title": "Quantity"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the product, ideally in the customer's language.",
+            "maxLength": 150,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "taxes": {
+            "type": "array",
+            "description": "A set of tax lines, each of which specifies a tax applied to the item.",
+            "items": {
+              "$ref": "#/components/schemas/Tax.Create"
+            },
+            "title": "Taxes",
+            "uniqueItems": true
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LineItemAttribute.Create"
+            },
+            "description": "A map of custom information for the item.",
+            "title": "Attributes"
+          },
+          "amountIncludingTax": {
+            "type": "number",
+            "description": "The line item price with discounts applied, including taxes.",
+            "title": "Amount Including Tax"
+          },
+          "discountIncludingTax": {
+            "type": "number",
+            "description": "The discount allocated to the item, including taxes.",
+            "title": "Discount Including Tax"
+          },
+          "sku": {
+            "type": "string",
+            "description": "The SKU (stock-keeping unit) of the product.",
+            "maxLength": 200,
+            "title": "SKU"
+          },
+          "type": {
+            "$ref": "#/components/schemas/LineItemType"
+          },
+          "uniqueId": {
+            "type": "string",
+            "description": "The unique identifier of the line item within the set of line items.",
+            "maxLength": 200,
+            "title": "Unique ID"
+          }
+        },
+        "required": [
+          "amountIncludingTax",
+          "name",
+          "quantity",
+          "type",
+          "uniqueId"
+        ],
+        "title": "Line Item",
+        "x-model-type": "CREATE"
+      },
+      "LineItemAttribute": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitemattribute"
+        },
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The label describing the line item attribute.",
+            "maxLength": 512,
+            "readOnly": true,
+            "title": "Label"
+          },
+          "value": {
+            "type": "string",
+            "description": "The value of the line item attribute.",
+            "maxLength": 512,
+            "readOnly": true,
+            "title": "Value"
+          }
+        },
+        "title": "Line Item Attribute",
+        "x-model-type": "READ"
+      },
+      "LineItemAttribute.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitemattribute_create"
+        },
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The label describing the line item attribute.",
+            "maxLength": 512,
+            "title": "Label"
+          },
+          "value": {
+            "type": "string",
+            "description": "The value of the line item attribute.",
+            "maxLength": 512,
+            "title": "Value"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "Line Item Attribute . Create",
+        "x-model-type": "CREATE"
+      },
+      "LineItemReduction.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitemreduction_create"
+        },
+        "properties": {
+          "quantityReduction": {
+            "type": "number",
+            "description": "The quantity removed or reduced from the line item. This value reflects the decrease in the item count due to the reduction.",
+            "title": "Quantity Reduction"
+          },
+          "unitPriceReduction": {
+            "type": "number",
+            "description": "The monetary amount by which the line item's unit price is discounted. This reduction adjusts the price without altering the quantity.",
+            "title": "Unit Price Reduction"
+          },
+          "lineItemUniqueId": {
+            "type": "string",
+            "description": "The unique identifier of the line item to which the reduction is applied. This ID ensures the reduction is accurately associated with the correct item.",
+            "maxLength": 200,
+            "title": "Unique ID"
+          }
+        },
+        "required": [
+          "lineItemUniqueId",
+          "quantityReduction",
+          "unitPriceReduction"
+        ],
+        "title": "Line Item Reduction . Create",
+        "x-model-type": "CREATE"
+      },
+      "LineItemType": {
+        "type": "string",
+        "enum": [
+          "SHIPPING",
+          "DISCOUNT",
+          "FEE",
+          "PRODUCT",
+          "TIP"
+        ],
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_lineitemtype"
+        },
+        "title": "Line Item Type",
+        "x-model-type": "ENUM"
+      },
+      "LocalizedString": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_localizedstring"
+        },
+        "properties": {
+          "string": {
+            "type": "string",
+            "description": "The localized term.",
+            "readOnly": true,
+            "title": "String"
+          },
+          "language": {
+            "type": "string",
+            "description": "The term's language.",
+            "readOnly": true,
+            "title": "Language"
+          }
+        },
+        "title": "Localized String",
+        "x-model-type": "READ"
+      },
+      "RestApiErrorResponse": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_restapierrorresponse"
+        },
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The date and time when the error occurred.",
+            "readOnly": true,
+            "title": "Date"
+          },
+          "code": {
+            "type": "string",
+            "description": "A brief explanation of the error that can be used to programmatically handle it.",
+            "readOnly": true,
+            "title": "Code"
+          },
+          "id": {
+            "type": "string",
+            "description": "The unique identifier of the error.",
+            "readOnly": true,
+            "title": "Id"
+          },
+          "message": {
+            "type": "string",
+            "description": "A human-readable message providing more details about the error.",
+            "readOnly": true,
+            "title": "Message"
+          },
+          "errors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "A map of errors where the key represents the error identifier (such as field name or error context) and the value contains the detailed error message.",
+            "readOnly": true,
+            "title": "Errors"
+          }
+        },
+        "title": "Error Response",
+        "x-model-type": "READ"
+      },
+      "Tax": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_tax"
+        },
+        "properties": {
+          "rate": {
+            "type": "number",
+            "description": "The tax rate to be applied.",
+            "maximum": 100,
+            "readOnly": true,
+            "title": "Rate"
+          },
+          "title": {
+            "type": "string",
+            "description": "The name of the tax.",
+            "maxLength": 40,
+            "minLength": 2,
+            "readOnly": true,
+            "title": "Title"
+          }
+        },
+        "title": "Tax",
+        "x-model-type": "READ"
+      },
+      "Tax.Create": {
+        "type": "object",
+        "externalDocs": {
+          "url": "https://app-wallee.com/doc/api/web-service#_tax_create"
+        },
+        "properties": {
+          "rate": {
+            "type": "number",
+            "description": "The tax rate to be applied.",
+            "maximum": 100,
+            "title": "Rate"
+          },
+          "title": {
+            "type": "string",
+            "description": "The name of the tax.",
+            "maxLength": 40,
+            "minLength": 2,
+            "title": "Title"
+          }
+        },
+        "required": [
+          "rate",
+          "title"
+        ],
+        "title": "Tax (in creation)",
+        "x-model-type": "CREATE"
+      },
+      "Transaction": {
+        "type": "object",
+        "description": "STUB: full Transaction schema omitted from this excerpt (see https://app-wallee.com/api/spec3.json)."
+      }
+    },
+    "responses": {
+      "400": {
+        "description": "The request was not accepted often due to missing or invalid parameters.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "The necessary authentication credentials are missing or incorrect.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "403": {
+        "description": "The application user is missing the required permissions.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "The requested resource was not found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "406": {
+        "description": "The requested response format is not supported.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "415": {
+        "description": "The request provides unsupported or invalid data.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "The request is well-formed but contains semantic errors. Check the response body for details.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "Too many requests hit the API too quickly.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "5XX": {
+        "description": "An internal error occurred on the server.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "default": {
+        "description": "Error response.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      },
+      "409": {
+        "description": "The request conflicts with another request often because of to optimistic locking.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RestApiErrorResponse"
+            }
+          }
+        }
+      }
+    }
+  }
+}
