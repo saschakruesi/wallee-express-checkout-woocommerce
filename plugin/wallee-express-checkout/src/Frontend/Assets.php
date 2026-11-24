@@ -17,12 +17,19 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Assets {
 
+	/**
+	 * Contexts whose container this request already printed.
+	 *
+	 * @var array
+	 */
+	private static $emitted = array();
+
 	const HANDLE         = 'wallee-ec';
 	const HANDLER_HANDLE = 'wallee-ec-handler';
 
 	/**
 	 * Path of wallee's handler script below the main plugin's base URL.
-	 * Spike item 2 had not been recorded yet: this is the documented default.
+	 * Confirmed by the API spike (spike-findings.md item 2).
 	 */
 	const HANDLER_PATH = 'assets/payment/express-checkout-handler.js';
 
@@ -83,9 +90,13 @@ final class Assets {
 		if ( $terms_page_id <= 0 ) {
 			return '';
 		}
+		$permalink = get_permalink( $terms_page_id );
+		if ( ! is_string( $permalink ) || '' === $permalink ) {
+			return '';
+		}
 		$link = sprintf(
 			'<a href="%1$s" target="_blank" rel="noopener">%2$s</a>',
-			esc_url( (string) get_permalink( $terms_page_id ) ),
+			esc_url( $permalink ),
 			esc_html__( 'terms and conditions', 'wallee-express-checkout' )
 		);
 
@@ -96,6 +107,28 @@ final class Assets {
 				$link
 			)
 		) . '</p>';
+	}
+
+	/**
+	 * Claims the container of a context for this request.
+	 *
+	 * @param string $context Context.
+	 * @return bool True the first time, false after.
+	 */
+	public static function claim( string $context ): bool {
+		if ( isset( self::$emitted[ $context ] ) ) {
+			return false;
+		}
+		self::$emitted[ $context ] = true;
+
+		return true;
+	}
+
+	/**
+	 * Forgets the claimed contexts (tests).
+	 */
+	public static function resetEmitted(): void {
+		self::$emitted = array();
 	}
 
 	/**

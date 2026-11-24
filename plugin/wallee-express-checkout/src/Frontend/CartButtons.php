@@ -77,7 +77,7 @@ final class CartButtons {
 	 * Prints the container (classic cart).
 	 */
 	public function render(): void {
-		if ( $this->enabled() ) {
+		if ( $this->enabled() && is_cart() && Assets::claim( CartSnapshot::CONTEXT_CART ) ) {
 			echo $this->markup(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Escaped in Assets::containerHtml.
 		}
 	}
@@ -90,11 +90,18 @@ final class CartButtons {
 	 * @return string
 	 */
 	public function filterBlock( $content, $block = array() ): string {
-		if ( ! is_array( $block ) || ! isset( $block['blockName'] ) || self::BLOCK !== $block['blockName'] || ! $this->enabled() ) {
+		if ( ! is_array( $block ) || ! isset( $block['blockName'] ) || self::BLOCK !== $block['blockName'] || ! $this->enabled() || ! is_cart() ) {
 			return (string) $content;
 		}
+		$markup = $this->markup();
+		$result = Assets::appendToBlock( $content, $block, self::BLOCK, $markup, CartSnapshot::CONTEXT_CART );
+		if ( $result !== (string) $content ) {
+			if ( ! Assets::claim( CartSnapshot::CONTEXT_CART ) ) {
+				return (string) $content;
+			}
+		}
 
-		return Assets::appendToBlock( $content, $block, self::BLOCK, $this->markup(), CartSnapshot::CONTEXT_CART );
+		return $result;
 	}
 
 	/**

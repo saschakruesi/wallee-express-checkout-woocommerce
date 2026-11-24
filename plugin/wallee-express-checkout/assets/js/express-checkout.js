@@ -14,8 +14,15 @@
 	const context = config.context;
 	const containerId = 'wallee-ec-container-' + context;
 
+	// wallee sessions die after 30 minutes: renew well before that.
+	const SESSION_REFRESH_MS = 25 * 60 * 1000;
+	const MAX_QUANTITY = 999;
+
 	let controller = null;
 	let sequence = 0;
+	let refreshTimer = null;
+	let loadedAt = 0;
+	let refresh = null;
 
 	function findRoot() {
 		return document.querySelector( '.wallee-ec[data-context="' + context + '"]' );
@@ -43,7 +50,14 @@
 		};
 	}
 
+	function clearRefresh() {
+		window.clearTimeout( refreshTimer );
+		refreshTimer = null;
+		loadedAt = 0;
+	}
+
 	function cancelPending() {
+		clearRefresh();
 		sequence++;
 		if ( controller ) {
 			controller.abort();
@@ -52,7 +66,27 @@
 	}
 
 	function showError() {
+		clearRefresh();
 		setHidden( true );
+	}
+
+	/**
+	 * Clears a widget that no longer matches the page, before the debounce
+	 * fires, so nobody can pay for the old content.
+	 */
+	function invalidate() {
+		cancelPending();
+		emptyContainer();
+	}
+
+	function scheduleRefresh() {
+		clearRefresh();
+		loadedAt = Date.now();
+		refreshTimer = window.setTimeout( function () {
+			if ( refresh ) {
+				refresh();
+			}
+		}, SESSION_REFRESH_MS );
 	}
 
 	function render( token ) {
@@ -68,12 +102,15 @@
 			onError: function () {
 				showError();
 			},
+			// The customer closed a wallet sheet: keep the buttons.
+			onCancel: function () {},
 		};
 		if ( config.maxRows !== undefined && Number( config.maxRows ) > 0 ) {
 			options.maxRows = Number( config.maxRows );
 		}
 		try {
-			handler.load( containerId, token, options );
+			Promise.resolve( handler.load( containerId, token, options ) ).catch( showError );
+			scheduleRefresh();
 		} catch ( e ) {
 			showError();
 		}
@@ -88,6 +125,7 @@
 	 */
 	async function requestSession( requestContext, params ) {
 		cancelPending();
+		emptyContainer();
 		const mine = sequence;
 		controller = typeof window.AbortController === 'function' ? new window.AbortController() : null;
 
@@ -159,7 +197,12 @@
 		const request = function () {
 			requestSession( 'cart' );
 		};
-		const debounced = debounce( request, DEBOUNCE_MS );
+		const schedule = debounce( request, DEBOUNCE_MS );
+		const debounced = function () {
+			invalidate();
+			schedule();
+		};
+		refresh = request;
 
 		request();
 
@@ -199,6 +242,10 @@
 
 		const type = root.getAttribute( 'data-product-type' );
 		const productId = parseInt( root.getAttribute( 'data-product-id' ), 10 ) || 0;
+		if ( productId < 1 ) {
+			showError();
+			return;
+		}
 		const variable = type === 'variable';
 		let selected = null;
 
@@ -215,8 +262,27 @@
 			return value > 0 ? value : 1;
 		};
 
+		// Attribute choices come from the form: "Any ..." variations report ''.
+		const attributesFor = function ( variation ) {
+			const attributes = Object.assign( {}, variation.attributes || {} );
+			form.querySelectorAll( '[name^="attribute_"]' ).forEach( function ( field ) {
+				if ( ( field.type === 'radio' || field.type === 'checkbox' ) && ! field.checked ) {
+					return;
+				}
+				if ( field.value !== '' ) {
+					attributes[ field.name ] = field.value;
+				}
+			} );
+			return attributes;
+		};
+
 		const request = function () {
-			const params = { productId: productId, quantity: quantity() };
+			const amount = quantity();
+			if ( amount > MAX_QUANTITY ) {
+				showError();
+				return;
+			}
+			const params = { productId: productId, quantity: amount };
 			if ( variable ) {
 				if ( ! selected ) {
 					return;
@@ -226,7 +292,22 @@
 			}
 			requestSession( 'product', params );
 		};
-		const debounced = debounce( request, DEBOUNCE_MS );
+		refresh = request;
+		const schedule = debounce( request, DEBOUNCE_MS );
+		const debounced = function () {
+			if ( variable && ! selected ) {
+				return;
+			}
+			invalidate();
+			schedule();
+		};
+
+		// The wallet buttons must never submit the add-to-cart form.
+		form.addEventListener( 'submit', function ( event ) {
+			if ( event.submitter && event.submitter.closest( '.wallee-ec' ) ) {
+				event.preventDefault();
+			}
+		} );
 
 		form.addEventListener( 'change', function ( event ) {
 			const target = event.target;
@@ -241,7 +322,7 @@
 				if ( ! variation || ! variation.variation_id ) {
 					return;
 				}
-				selected = { variationId: variation.variation_id, attributes: variation.attributes || {} };
+				selected = { variationId: variation.variation_id, attributes: attributesFor( variation ) };
 				request();
 			} );
 			const clear = function () {
@@ -254,11 +335,20 @@
 			// Quantity changes made through jQuery do not reach native listeners.
 			$form.on( 'change', 'input.qty, input[name="quantity"]', debounced );
 		} else {
+			if ( window.jQuery ) {
+				// Theme +/- buttons trigger jQuery events that native listeners miss.
+				window.jQuery( form ).on( 'change', 'input.qty, input[name="quantity"]', debounced );
+			}
 			request();
 		}
 	}
 
 	function init() {
+		document.addEventListener( 'visibilitychange', function () {
+			if ( document.visibilityState === 'visible' && loadedAt && refresh && Date.now() - loadedAt > SESSION_REFRESH_MS ) {
+				refresh();
+			}
+		} );
 		whenRootExists( function () {
 			if ( ! window.ExpressCheckoutHandler ) {
 				setHidden( true );

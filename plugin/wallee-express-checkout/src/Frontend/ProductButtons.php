@@ -75,7 +75,7 @@ final class ProductButtons {
 	 */
 	public function render(): void {
 		global $product;
-		if ( ! $this->enabled() || ! $product instanceof \WC_Product ) {
+		if ( ! $this->enabled() || ! is_product() || ! $product instanceof \WC_Product ) {
 			return;
 		}
 		$type = $product->get_type();
@@ -83,6 +83,9 @@ final class ProductButtons {
 			return;
 		}
 
+		if ( ! Assets::claim( CartSnapshot::CONTEXT_PRODUCT ) ) {
+			return;
+		}
 		$html = Assets::containerHtml(
 			CartSnapshot::CONTEXT_PRODUCT,
 			Assets::termsPageId(),

@@ -106,4 +106,19 @@ class AssetsTest extends TestCase {
 			Assets::appendToBlock( $content, $block, 'woocommerce/proceed-to-checkout-block', Assets::containerHtml( 'cart', 0 ), 'cart' )
 		);
 	}
+
+	public function test_terms_line_is_skipped_without_a_permalink() {
+		Functions\when( 'get_permalink' )->justReturn( false );
+		$this->assertSame( '', Assets::termsLine( 9 ) );
+		$this->assertStringNotContainsString( 'wallee-ec-terms', Assets::containerHtml( 'cart', 9 ) );
+	}
+
+	public function test_claim_is_true_once_until_reset() {
+		Assets::resetEmitted();
+		$this->assertTrue( Assets::claim( 'cart' ) );
+		$this->assertFalse( Assets::claim( 'cart' ) );
+		$this->assertTrue( Assets::claim( 'product' ) );
+		Assets::resetEmitted();
+		$this->assertTrue( Assets::claim( 'cart' ) );
+	}
 }
