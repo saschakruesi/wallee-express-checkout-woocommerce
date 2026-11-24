@@ -37,6 +37,11 @@ final class ResultHandler {
 	const STATUS_FAILURE = 'failure';
 
 	/**
+	 * A result link is accepted for 7 days after the session was created.
+	 */
+	const MAX_AGE_SECONDS = 604800;
+
+	/**
 	 * Session storage.
 	 *
 	 * @var SessionRepository
@@ -149,7 +154,12 @@ final class ResultHandler {
 		}
 
 		$record = $this->repository->findByUuid( $uuid );
-		$order  = null === $record || null === $record->orderId() ? null : $this->orders->find( $record->orderId() );
+		if ( null !== $record && $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
+			$this->log( sprintf( 'Result: session row %d is too old for its result link.', $record->id() ), 'warning' );
+
+			return $this->toCart( Redirects::genericNotice() );
+		}
+		$order = null === $record || null === $record->orderId() ? null : $this->orders->find( $record->orderId() );
 		if ( null === $record || null === $order ) {
 			$this->log( sprintf( 'Result: %s for %s.', $status, null === $record ? 'an unknown session' : sprintf( 'session row %d without order', $record->id() ) ), 'warning' );
 

@@ -192,6 +192,22 @@ final class SessionRecord {
 	}
 
 	/**
+	 * Whether the row was created more than the given number of seconds ago.
+	 * A creation time that cannot be read counts as too old.
+	 *
+	 * @param int      $seconds Maximum age.
+	 * @param int|null $now     Current Unix time, null for now.
+	 */
+	public function isOlderThan( int $seconds, ?int $now = null ): bool {
+		$created = \DateTimeImmutable::createFromFormat( '!Y-m-d H:i:s', $this->created_at, new \DateTimeZone( 'UTC' ) );
+		if ( false === $created ) {
+			return true;
+		}
+
+		return ( null === $now ? time() : $now ) - $created->getTimestamp() > $seconds;
+	}
+
+	/**
 	 * Shipping quote stored by the last shipping callback: `destination`
 	 * (country, state, postcode, city) and `rates` (as returned by
 	 * ShippingOptionsProvider::ratesFor). Null when none was stored.

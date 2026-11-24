@@ -14,12 +14,17 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $total;
 		public $status               = 'pending';
 		public $billing_email        = '';
+		public $billing_country      = '';
+		public $shipping_country     = '';
 		public $payment_method       = 'wallee_express_checkout';
 		public $payment_method_title = 'wallee Express Checkout';
 		public $created_via          = 'wallee_express_checkout';
 		public $meta                 = array();
 		public $notes                = array();
 		public $saves                = 0;
+		public $currency             = '';
+		public $customer_id          = 0;
+		public $products             = array();
 
 		public function __construct( int $id = 0, $total = 0.0 ) {
 			$this->id    = $id;
@@ -44,6 +49,35 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 
 		public function get_billing_email() {
 			return $this->billing_email;
+		}
+
+		public function set_billing_email( $email ) {
+			$this->billing_email = $email;
+		}
+
+		public function set_currency( $currency ) {
+			$this->currency = $currency;
+		}
+
+		public function set_customer_id( $id ) {
+			$this->customer_id = $id;
+		}
+
+		public function get_customer_id() {
+			return $this->customer_id;
+		}
+
+		public function add_product( $product, $quantity = 1, $args = array() ) {
+			$this->products[] = array( $product, $quantity, $args );
+			return count( $this->products );
+		}
+
+		public function get_billing_country() {
+			return $this->billing_country;
+		}
+
+		public function get_shipping_country() {
+			return $this->shipping_country;
 		}
 
 		public function get_created_via() {

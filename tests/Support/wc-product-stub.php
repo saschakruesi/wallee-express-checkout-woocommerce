@@ -76,6 +76,10 @@ if ( ! class_exists( 'WC_Product', false ) ) {
 		public function is_sold_individually() {
 			return $this->props['sold_individually'];
 		}
+
+		public function get_stock_managed_by_id() {
+			return $this->props['id'];
+		}
 	}
 }
 

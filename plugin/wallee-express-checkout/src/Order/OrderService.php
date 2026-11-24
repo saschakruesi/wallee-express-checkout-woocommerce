@@ -12,7 +12,8 @@ use Wallee\ExpressCheckout\Cart\CartSnapshot;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Thin instance wrapper around OrderFactory, OrderValidator::stockAndCoupons
+ * Thin instance wrapper around OrderFactory, the WooCommerce checks of
+ * OrderValidator
  * and wc_get_order, so the handlers can be unit tested with a double. Holds
  * no logic of its own.
  */
@@ -66,23 +67,31 @@ class OrderService {
 	/**
 	 * See OrderFactory::applyCustomer().
 	 *
-	 * @param \WC_Order   $order         Order.
-	 * @param array       $transaction   Transaction with addresses expanded.
-	 * @param int         $customer_id   WordPress user ID, 0 for guests.
-	 * @param string|null $quote_country Country the shipping rate was calculated for.
+	 * @param \WC_Order $order       Order.
+	 * @param array     $transaction Transaction with addresses expanded.
+	 * @param int       $customer_id WordPress user ID, 0 for guests.
 	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
-		return OrderFactory::applyCustomer( $order, $transaction, $customer_id, $quote_country );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
+		return OrderFactory::applyCustomer( $order, $transaction, $customer_id );
 	}
 
 	/**
 	 * See OrderValidator::stockAndCoupons().
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param string       $email    E-mail, empty if unknown.
 	 */
-	public function stockAndCoupons( CartSnapshot $snapshot, string $email ): ?string {
-		return OrderValidator::stockAndCoupons( $snapshot, $email );
+	public function stockAndCoupons( CartSnapshot $snapshot ): ?string {
+		return OrderValidator::stockAndCoupons( $snapshot );
+	}
+
+	/**
+	 * See OrderValidator::customerCoupons().
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param string       $email    Billing e-mail of the order.
+	 */
+	public function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
+		return OrderValidator::customerCoupons( $snapshot, $email );
 	}
 }

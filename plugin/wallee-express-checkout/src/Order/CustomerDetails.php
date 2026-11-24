@@ -95,7 +95,7 @@ final class CustomerDetails {
 		call_user_func( $this->log, sprintf( 'Session row %d: order %d has transaction %d.', $record->id(), $order->get_id(), $transaction_id ) );
 
 		$transaction = $this->api->getTransaction( $transaction_id );
-		$email       = $this->orders->applyCustomer( $order, $transaction, $record->snapshot()->customerId(), self::quoteCountry( $record ) );
+		$email       = $this->orders->applyCustomer( $order, $transaction, $record->snapshot()->customerId() );
 		$state       = isset( $transaction['state'] ) && is_string( $transaction['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $transaction['state'] ) : '';
 		call_user_func(
 			$this->log,
@@ -179,19 +179,5 @@ final class CustomerDetails {
 		}
 
 		return null;
-	}
-
-	/**
-	 * Country of the stored shipping quote, null without one.
-	 *
-	 * @param SessionRecord $record Row.
-	 */
-	private static function quoteCountry( SessionRecord $record ): ?string {
-		$quote = $record->shippingQuote();
-		if ( null === $quote || ! isset( $quote['destination']['country'] ) || ! is_string( $quote['destination']['country'] ) ) {
-			return null;
-		}
-
-		return $quote['destination']['country'];
 	}
 }

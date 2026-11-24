@@ -29,6 +29,7 @@ class ReturnHandlerTest extends TestCase {
 	const CART     = 'https://shop.test/cart/';
 	const WALLEE   = 'https://app-wallee.com/s/4711/payment/chargeattempt/redirect/1?securityToken=t';
 	const RECEIVED = 'https://shop.test/checkout/order-received/501/?key=wc_order_k';
+	const TEST_NOTE = 'Test payment (wallee Express Checkout TEST environment). No real money was moved.';
 
 	/** @var FakeSessionRepository */
 	private $repository;
@@ -47,6 +48,15 @@ class ReturnHandlerTest extends TestCase {
 
 	/** @var int[] Order IDs the background link was scheduled for. */
 	private $scheduled = array();
+
+	/** @var string Configured environment. */
+	private $environment = 'TEST';
+
+	/** @var bool Whether taxes follow the customer's address. */
+	private $tax_follows = false;
+
+	/** @var string Host of the configured wallee base URL. */
+	private $wallee_host = 'app-wallee.com';
 
 	protected function setUp(): void {
 		parent::setUp();
@@ -67,9 +77,12 @@ class ReturnHandlerTest extends TestCase {
 			}
 		);
 
-		$this->notices    = array();
-		$this->logs       = array();
-		$this->scheduled  = array();
+		$this->notices     = array();
+		$this->logs        = array();
+		$this->scheduled   = array();
+		$this->environment = 'TEST';
+		$this->tax_follows = false;
+		$this->wallee_host = 'app-wallee.com';
 		$this->repository = new FakeSessionRepository(
 			CartSnapshotTest::data(),
 			array( 'shipping_quote' => self::quote() )
@@ -113,8 +126,9 @@ class ReturnHandlerTest extends TestCase {
 	public static function approved( array $over = array() ): array {
 		return array_merge(
 			array(
-				'id'                  => 335,
-				'state'               => 'APPROVED',
+				'id'                       => 335,
+				'state'                    => 'APPROVED',
+				'authorizationEnvironment' => 'TEST',
 				'currency'            => 'CHF',
 				'linkedSpaceId'       => 4711,
 				'authorizationAmount' => 60.11,
@@ -160,7 +174,10 @@ class ReturnHandlerTest extends TestCase {
 				$this->scheduled[] = $order_id;
 				return true;
 			},
-			$log
+			$log,
+			$this->environment,
+			$this->wallee_host,
+			$this->tax_follows
 		);
 	}
 
@@ -209,7 +226,8 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 501, $this->repository->row['order_id'] );
 		$this->assertSame( 629017977, $this->repository->row['transaction_id'] );
 		$this->assertSame( 629017977, $this->orders->orders[501]->get_meta( '_wallee_ec_transaction_id' ) );
-		$this->assertSame( array( 501, $this->api->transaction, 0, 'CH' ), $this->orders->applied[0] );
+		$this->assertSame( array( 501, $this->api->transaction, 0 ), $this->orders->applied[0] );
+		$this->assertSame( array( 'buyer@example.test' ), $this->orders->coupon_checks, 'coupons re-checked with the e-mail' );
 		$this->assertSame( array(), $this->notices );
 	}
 
@@ -503,7 +521,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( array(), $this->scheduled );
 		$this->assertNull( $this->handler()->externalHost() );
 		$this->assertSame( array( 'error: Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.' ), $this->notices );
-		$this->assertSame( array(), $this->orders->orders[501]->notes, 'nothing reserved yet: no portal action needed' );
+		$this->assertSame( array( self::TEST_NOTE ), $this->orders->orders[501]->notes, 'nothing reserved yet: no portal action needed' );
 	}
 
 	/**
@@ -519,9 +537,11 @@ class ReturnHandlerTest extends TestCase {
 
 		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
 		$notes = $this->orders->orders[501]->notes;
-		$this->assertCount( 1, $notes );
-		$this->assertStringContainsString( 'ACTION REQUIRED', $notes[0] );
-		$this->assertStringContainsString( '629017977', $notes[0] );
+		$this->assertCount( 2, $notes );
+		$this->assertSame( self::TEST_NOTE, $notes[0] );
+		$this->assertStringContainsString( 'ACTION REQUIRED', $notes[1] );
+		$this->assertStringContainsString( '629017977', $notes[1] );
+		$this->assertStringContainsString( 'no_email', $notes[1] );
 		$this->assertStringContainsString( 'error: Return: order 501: wallee transaction 629017977 must be voided or refunded in the wallee portal', implode( "\n", $this->logs ) );
 	}
 
@@ -584,7 +604,7 @@ class ReturnHandlerTest extends TestCase {
 
 		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
 		$this->assertNull( $this->orders->created[0][1] );
-		$this->assertNull( $this->orders->applied[0][3] );
+		$this->assertCount( 1, $this->orders->applied );
 	}
 
 	public function test_logs_carry_ids_and_states_only() {
@@ -598,4 +618,186 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertStringNotContainsString( '@', $all );
 		$this->assertStringNotContainsString( self::UUID, $all );
 	}
+
+	public function test_a_session_approved_in_another_environment_is_rejected() {
+		$this->api->sessions = array( self::approved( array( 'authorizationEnvironment' => 'PRODUCTION' ) ) );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertNothingCreated();
+		$this->assertStringContainsString( 'rejected: environment_mismatch', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_session_without_an_environment_is_rejected() {
+		$session = self::approved();
+		unset( $session['authorizationEnvironment'] );
+		$this->api->sessions = array( $session );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertNothingCreated();
+	}
+
+	public function test_a_test_payment_is_recorded_on_the_order() {
+		$this->handler()->handle( $this->query() );
+
+		$order = $this->orders->orders[501];
+		$this->assertSame( 'TEST', $order->get_meta( '_wallee_ec_environment' ) );
+		$this->assertSame( array( self::TEST_NOTE ), $order->notes );
+		$this->assertSame( 'wallee Express Checkout', $order->get_payment_method_title(), 'title unchanged' );
+	}
+
+	public function test_a_production_payment_is_recorded_without_a_test_note() {
+		$this->environment   = 'PRODUCTION';
+		$this->api->sessions = array( self::approved( array( 'authorizationEnvironment' => 'PRODUCTION' ) ), self::processing() );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'PRODUCTION', $this->orders->orders[501]->get_meta( '_wallee_ec_environment' ) );
+		$this->assertSame( array(), $this->orders->orders[501]->notes );
+	}
+
+	/**
+	 * Asserts the order failed after process and the customer was not sent to wallee.
+	 *
+	 * @param string $reason Reason code.
+	 * @param string $url    Returned URL.
+	 */
+	private function assertFailedBeforePayment( string $reason, string $url ): void {
+		$this->assertSame( self::CART, $url );
+		$this->assertSame( array( 501 => $reason ), $this->orders->failed );
+		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertCount( 1, $this->notices );
+	}
+
+	public function test_a_coupon_invalid_for_the_wallet_email_fails_the_order_before_payment() {
+		$this->orders->coupon_reason = 'coupon_invalid';
+		$handler                     = $this->handler();
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost() );
+		$this->assertSame( array( 'buyer@example.test' ), $this->orders->coupon_checks );
+		$this->assertStringContainsString( 'coupon', $this->notices[0] );
+	}
+
+	public function test_a_coupon_failure_with_money_reserved_asks_for_void_or_refund() {
+		$this->orders->coupon_reason     = 'coupon_invalid';
+		$this->api->transaction['state'] = 'AUTHORIZED';
+
+		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
+		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
+		$this->assertStringContainsString( 'coupon_invalid', $this->orders->orders[501]->notes[1] );
+	}
+
+	public function test_coupons_are_not_rechecked_without_an_email() {
+		$this->orders->applied_email = '';
+		$this->orders->coupon_reason = 'coupon_invalid';
+
+		$this->assertFailedBeforePayment( 'no_email', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->coupon_checks );
+	}
+
+	public function test_a_shipping_address_in_another_country_than_the_quote_fails_the_order() {
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'DE' );
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'error: Express checkout is not available for this destination. Please use the regular checkout.', $this->notices[0] );
+	}
+
+	public function test_the_billing_country_counts_when_there_is_no_shipping_address() {
+		$this->api->transaction = array(
+			'id'             => 629017977,
+			'state'          => 'PROCESSING',
+			'billingAddress' => array( 'country' => 'AT' ),
+		);
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_an_unknown_country_does_not_fail_the_order() {
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'PROCESSING',
+		);
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+	}
+
+	/**
+	 * Snapshot without shipping (no quote) and a transaction in the given country.
+	 *
+	 * @param string $country Country of the wallet address.
+	 */
+	private function virtual_purchase( string $country ): void {
+		$data                               = CartSnapshotTest::data();
+		$data['items'][0]['needs_shipping'] = false;
+		$this->repository                   = new FakeSessionRepository( $data );
+		$session                            = self::approved(
+			array(
+				'shippingOptions'     => array(),
+				'authorizationAmount' => 52.0,
+			)
+		);
+		$this->api->sessions                = array( $session, array_merge( $session, array( 'linkedTransaction' => 629017977 ) ) );
+		$this->api->transaction             = array(
+			'id'             => 629017977,
+			'state'          => 'PROCESSING',
+			'billingAddress' => array( 'country' => $country ),
+		);
+	}
+
+	public function test_an_address_outside_the_tax_country_fails_the_order_when_taxes_follow_the_address() {
+		$this->tax_follows = true;
+		$this->virtual_purchase( 'DE' );
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_an_address_outside_the_tax_country_is_accepted_when_taxes_do_not_follow_the_address() {
+		$this->virtual_purchase( 'DE' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+	}
+
+	public function test_the_tax_country_is_accepted_when_taxes_follow_the_address() {
+		$this->tax_follows = true;
+		$this->virtual_purchase( 'CH' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_a_redirect_to_another_host_than_the_configured_wallee_host_fails_the_order() {
+		$this->wallee_host = 'checkout.example.org';
+		$handler           = $this->handler();
+
+		$this->assertFailedBeforePayment( 'redirect_host_mismatch', $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost() );
+		$this->assertStringContainsString( 'failed: redirect_host_mismatch', implode( "\n", $this->logs ) );
+	}
+
+	public function test_the_redirect_host_is_compared_without_case() {
+		$this->wallee_host = 'App-Wallee.com';
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_a_return_link_older_than_two_hours_goes_to_the_cart_and_touches_nothing() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 7201 );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->repository->calls );
+		$this->assertSame( array(), $this->api->calls );
+		$this->assertCount( 1, $this->notices );
+	}
+
+	public function test_an_old_return_link_of_a_processed_row_does_not_lead_to_the_order() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 7201 );
+		$this->repository->row['state']      = 'processed';
+		$this->repository->row['order_id']   = 501;
+		$this->orders->orders[501]           = new \WC_Order( 501, 60.11 );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+	}
 }
+

@@ -80,6 +80,7 @@ class ShippingControllerTest extends TestCase {
 			}
 		);
 		$this->stored_row( 'created' );
+		$this->tax_basis( false );
 	}
 
 	protected function tearDown(): void {
@@ -87,18 +88,28 @@ class ShippingControllerTest extends TestCase {
 		parent::tearDown();
 	}
 
-	private function stored_row( string $state ): void {
+	private function stored_row( string $state, ?string $created_at = null, ?array $snapshot = null ): void {
 		$this->db->next_row = array(
 			'id'                => 1,
 			'session_uuid'      => self::UUID,
 			'wallee_session_id' => 99,
 			'space_id'          => 4711,
-			'snapshot'          => json_encode( CartSnapshotTest::data() ), // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+			'snapshot'          => json_encode( null === $snapshot ? CartSnapshotTest::data() : $snapshot ), // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
 			'state'             => $state,
 			'order_id'          => null,
 			'transaction_id'    => null,
-			'created_at'        => '2026-11-24 10:00:00',
+			'created_at'        => null === $created_at ? gmdate( 'Y-m-d H:i:s', time() - 60 ) : $created_at,
 		);
+	}
+
+	/**
+	 * Taxes by the customer's address (or not).
+	 *
+	 * @param bool $follows Whether taxes follow the address.
+	 */
+	private function tax_basis( bool $follows ): void {
+		Functions\when( 'wc_tax_enabled' )->justReturn( $follows );
+		Functions\when( 'get_option' )->justReturn( 'shipping' );
 	}
 
 	private function body( array $over = array() ): array {
@@ -373,5 +384,63 @@ class ShippingControllerTest extends TestCase {
 		$this->assertSame( 200, $result['status'] );
 		$this->assertCount( 1, $this->logs );
 		$this->assertStringContainsString( 'could not be stored', $this->logs[0] );
+	}
+
+	public function test_a_link_older_than_two_hours_is_404_and_nothing_is_calculated() {
+		$this->stored_row( 'created', gmdate( 'Y-m-d H:i:s', time() - 7201 ) );
+		$this->provider->expects( $this->never() )->method( 'ratesFor' );
+
+		$this->assertSame( 404, $this->handle( $this->body() )['status'] );
+		$this->assertSame( array(), $this->quote_writes() );
+	}
+
+	public function test_a_link_just_under_two_hours_old_is_served() {
+		$this->stored_row( 'created', gmdate( 'Y-m-d H:i:s', time() - 7100 ) );
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+
+		$this->assertSame( 200, $this->handle( $this->body() )['status'] );
+	}
+
+	public function test_a_destination_outside_the_tax_country_gets_no_options_when_taxes_follow_the_address() {
+		$this->tax_basis( true );
+		$this->provider->expects( $this->never() )->method( 'ratesFor' );
+
+		$result = $this->handle( $this->body( array( 'countryCode' => 'DE' ) ) );
+
+		$this->assertSame( 200, $result['status'] );
+		$this->assertSame( array(), $result['body']['shippingOptions'] );
+		$this->assertSame( 'COUNTRY_UNAVAILABLE', $result['body']['error']['error'] );
+		$this->assertSame( 'Express checkout is not available for this destination. Please use the regular checkout.', $result['body']['error']['message'] );
+		$this->assertSame( array(), $this->quote_writes(), 'no quote stored' );
+	}
+
+	public function test_the_tax_country_is_served_when_taxes_follow_the_address() {
+		$this->tax_basis( true );
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+
+		$this->assertSame( 'flat_rate:1', $this->handle( $this->body( array( 'countryCode' => 'ch' ) ) )['body']['shippingOptions'][0]['id'] );
+	}
+
+	public function test_another_country_is_served_when_taxes_do_not_follow_the_address() {
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+
+		$this->assertSame( 'flat_rate:1', $this->handle( $this->body( array( 'countryCode' => 'DE' ) ) )['body']['shippingOptions'][0]['id'] );
+
+		Functions\when( 'wc_tax_enabled' )->justReturn( true );
+		Functions\when( 'get_option' )->justReturn( 'base' );
+		$this->stored_row( 'created' );
+		$this->assertSame( 'flat_rate:1', $this->handle( $this->body( array( 'countryCode' => 'DE' ) ) )['body']['shippingOptions'][0]['id'], 'taxed at the shop base' );
+	}
+
+	public function test_the_state_is_compared_when_the_tax_location_has_one() {
+		$this->tax_basis( true );
+		$data                          = CartSnapshotTest::data();
+		$data['tax_location']['state'] = 'ZH';
+		$this->stored_row( 'created', null, $data );
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+
+		$this->assertSame( 'COUNTRY_UNAVAILABLE', $this->handle( $this->body( array( 'state' => 'BE' ) ) )['body']['error']['error'] );
+		$this->stored_row( 'created', null, $data );
+		$this->assertNull( $this->handle( $this->body( array( 'state' => 'zh' ) ) )['body']['error'] );
 	}
 }

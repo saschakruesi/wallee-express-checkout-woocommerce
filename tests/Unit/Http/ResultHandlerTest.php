@@ -360,4 +360,24 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
 		$this->assertSame( array(), $this->repository->calls );
 	}
+
+	public function test_a_link_older_than_seven_days_goes_to_the_cart_and_changes_nothing() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 604801 );
+
+		foreach ( array( 'success', 'failure' ) as $status ) {
+			$this->assertSame( self::CART, $this->handler()->handle( $this->query( $status ) ) );
+		}
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( 'pending', $this->order->get_status() );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( array(), $this->adapter->links );
+		$this->assertCount( 2, $this->notices );
+	}
+
+	public function test_a_link_six_days_old_still_works() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 6 * 86400 );
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+	}
 }
+

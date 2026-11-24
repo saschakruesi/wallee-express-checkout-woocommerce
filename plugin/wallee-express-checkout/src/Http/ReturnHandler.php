@@ -40,6 +40,17 @@ final class ReturnHandler {
 	const PROCESS_FAILED = 'failed';
 
 	/**
+	 * A return link is accepted for 2 hours after the session was created
+	 * (a wallee session itself times out after 30 minutes).
+	 */
+	const MAX_AGE_SECONDS = 7200;
+
+	/**
+	 * Transaction states in which money is already reserved or taken.
+	 */
+	const MONEY_MOVED_STATES = array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' );
+
+	/**
 	 * Session storage.
 	 *
 	 * @var SessionRepository
@@ -89,6 +100,28 @@ final class ReturnHandler {
 	private $log;
 
 	/**
+	 * Configured authorization environment, TEST or PRODUCTION.
+	 *
+	 * @var string
+	 */
+	private $environment;
+
+	/**
+	 * Host of the configured wallee base URL; the only host the customer is
+	 * sent to.
+	 *
+	 * @var string
+	 */
+	private $wallee_host;
+
+	/**
+	 * Whether WooCommerce taxes by the customer's address.
+	 *
+	 * @var bool
+	 */
+	private $tax_follows_address;
+
+	/**
 	 * Host of the wallee redirect URL returned by the last handle() call.
 	 *
 	 * @var string|null
@@ -105,15 +138,21 @@ final class ReturnHandler {
 	 * @param CustomerDetails   $details       Step 10.
 	 * @param callable          $schedule_link Schedules the background link: function ( int $order_id ): bool.
 	 * @param callable          $log           Logger: function ( string $message, string $level ).
+	 * @param string            $environment   Configured authorization environment, TEST or PRODUCTION.
+	 * @param string            $wallee_host   Host of the configured wallee base URL.
+	 * @param bool              $tax_follows   Whether WooCommerce taxes by the customer's address.
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log ) {
-		$this->repository    = $repository;
-		$this->signer        = $signer;
-		$this->api           = $api;
-		$this->orders        = $orders;
-		$this->details       = $details;
-		$this->schedule_link = $schedule_link;
-		$this->log           = $log;
+	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log, string $environment, string $wallee_host, bool $tax_follows ) {
+		$this->repository          = $repository;
+		$this->signer              = $signer;
+		$this->api                 = $api;
+		$this->orders              = $orders;
+		$this->details             = $details;
+		$this->schedule_link       = $schedule_link;
+		$this->log                 = $log;
+		$this->environment         = $environment;
+		$this->wallee_host         = strtolower( $wallee_host );
+		$this->tax_follows_address = $tax_follows;
 	}
 
 	/**
@@ -129,7 +168,19 @@ final class ReturnHandler {
 				$repository = new SessionRepository( $wpdb );
 				$orders     = new OrderService();
 				$log        = array( $adapter, 'log' );
-				$handler    = new self( $repository, UrlSigner::fromWordPress(), $api, $orders, new CustomerDetails( $api, $repository, $orders, $log ), array( LinkScheduler::class, 'schedule' ), $log );
+				$host       = wp_parse_url( $adapter->baseUrl(), PHP_URL_HOST );
+				$handler    = new self(
+					$repository,
+					UrlSigner::fromWordPress(),
+					$api,
+					$orders,
+					new CustomerDetails( $api, $repository, $orders, $log ),
+					array( LinkScheduler::class, 'schedule' ),
+					$log,
+					Plugin::settings()->environment(),
+					is_string( $host ) ? $host : '',
+					OrderValidator::taxFollowsAddress()
+				);
 
 				$url = $handler->handle( Redirects::query( array( 'ec_session', 'sig' ) ) );
 				Redirects::send( $url, $handler->externalHost() );
@@ -161,6 +212,12 @@ final class ReturnHandler {
 			return $this->toCart();
 		}
 		$this->log( sprintf( 'Return: session row %d in state %s.', $record->id(), $record->state() ) );
+
+		if ( $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
+			$this->log( sprintf( 'Return: session row %d is too old for its return link.', $record->id() ), 'warning' );
+
+			return $this->toCart();
+		}
 
 		if ( SessionRecord::CREATED !== $record->state() ) {
 			return $this->settled( $record );
@@ -204,6 +261,10 @@ final class ReturnHandler {
 		if ( ! self::sameId( isset( $session['linkedSpaceId'] ) ? $session['linkedSpaceId'] : null, $record->spaceId() ) ) {
 			return $this->reject( $record, 'space_mismatch' );
 		}
+		$reason = OrderValidator::environment( $session, $this->environment );
+		if ( null !== $reason ) {
+			return $this->reject( $record, $reason );
+		}
 
 		$quote  = $record->shippingQuote();
 		$reason = OrderValidator::check( $snapshot, $session, $quote );
@@ -219,7 +280,7 @@ final class ReturnHandler {
 		}
 
 		try {
-			$reason = $this->orders->stockAndCoupons( $snapshot, '' );
+			$reason = $this->orders->stockAndCoupons( $snapshot );
 		} catch ( \Throwable $e ) {
 			$reason = 'validation_error (' . get_class( $e ) . ')';
 		}
@@ -249,10 +310,14 @@ final class ReturnHandler {
 		}
 
 		// Marks the order as possibly known to wallee, so the unpaid-order
-		// cleanup leaves it alone from here on.
+		// cleanup leaves it alone from here on, and records the environment.
 		try {
 			$order->update_meta_data( OrderFactory::META_PROCESS_STARTED, (string) time() );
+			$order->update_meta_data( OrderFactory::META_ENVIRONMENT, $this->environment );
 			$order->save();
+			if ( 'TEST' === $this->environment ) {
+				$order->add_order_note( __( 'Test payment (wallee Express Checkout TEST environment). No real money was moved.', 'wallee-express-checkout' ) );
+			}
 		} catch ( \Throwable $e ) {
 			return $this->failOrder( $record, $order, 'order_update_failed', get_class( $e ) );
 		}
@@ -319,10 +384,13 @@ final class ReturnHandler {
 	 * Step 10 and 11 once process went through (or probably did). The row is
 	 * marked first, so a reload during step 10 cannot strand it.
 	 *
-	 * Without an e-mail address the order fails (owner decision, design
-	 * amendment 2) and the customer is not sent on to wallee. A transaction
-	 * that cannot be read is not "no e-mail": the customer goes on and the
-	 * background link retries.
+	 * Once the transaction's customer data is on the order, the order must
+	 * still be valid for it before the customer is sent to wallee's payment
+	 * step: an e-mail address exists (owner decision, design amendment 2),
+	 * the coupons are valid for that e-mail, and the address is in the
+	 * country the shipping and the taxes were calculated for (amendment 3).
+	 * A transaction that cannot be read is not a failure: the customer goes
+	 * on and the background link retries.
 	 *
 	 * @param SessionRecord $record   Row.
 	 * @param \WC_Order     $order    Order.
@@ -342,8 +410,25 @@ final class ReturnHandler {
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: session row %d order %d: transaction details not read (%s); retried later.', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
 		}
-		if ( null !== $collected && ! $collected['email'] ) {
-			return $this->failWithoutEmail( $record, $order, $collected['transaction_id'], $collected['state'] );
+		if ( null !== $collected ) {
+			$failure = $this->customerFailure( $record, $order, $collected['email'] );
+			if ( null !== $failure ) {
+				return $this->failBeforePayment( $record, $order, $failure[0], $failure[1], $collected['transaction_id'], $collected['state'] );
+			}
+		}
+
+		if ( null !== $redirect ) {
+			$host = wp_parse_url( $redirect, PHP_URL_HOST );
+			if ( ! is_string( $host ) || '' === $this->wallee_host || strtolower( $host ) !== $this->wallee_host ) {
+				return $this->failBeforePayment(
+					$record,
+					$order,
+					'redirect_host_mismatch',
+					Redirects::genericNotice(),
+					null === $collected ? 0 : $collected['transaction_id'],
+					null === $collected ? '' : $collected['state']
+				);
+			}
 		}
 
 		if ( ! call_user_func( $this->schedule_link, $order->get_id() ) ) {
@@ -356,34 +441,71 @@ final class ReturnHandler {
 			return $order->get_checkout_order_received_url();
 		}
 
-		$host                = wp_parse_url( $redirect, PHP_URL_HOST );
-		$this->external_host = is_string( $host ) ? $host : null;
+		$this->external_host = $this->wallee_host;
 		$this->log( sprintf( 'Return: session row %d redirected to wallee.', $record->id() ) );
 
 		return $redirect;
 	}
 
 	/**
-	 * The transaction was read and carries no usable e-mail address: order
-	 * `failed`, row `failed`, cart. If the money is already reserved or taken,
+	 * Checks the order against the customer data the transaction provided.
+	 *
+	 * @param SessionRecord $record    Row.
+	 * @param \WC_Order     $order     Order with the customer data applied.
+	 * @param bool          $has_email Whether the order has an e-mail address.
+	 * @return array{0: string, 1: string}|null Reason code and customer notice, null if the order may be paid.
+	 */
+	private function customerFailure( SessionRecord $record, \WC_Order $order, bool $has_email ): ?array {
+		if ( ! $has_email ) {
+			return array( 'no_email', __( 'Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.', 'wallee-express-checkout' ) );
+		}
+
+		$snapshot = $record->snapshot();
+		try {
+			$reason = $this->orders->customerCoupons( $snapshot, (string) $order->get_billing_email() );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Return: order %d: coupon check failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+			$reason = OrderValidator::COUPON_INVALID;
+		}
+		if ( null !== $reason ) {
+			return array( OrderValidator::COUPON_INVALID, __( 'A coupon in your cart cannot be used for this order, so the order was not placed. Please check your cart or use the regular checkout.', 'wallee-express-checkout' ) );
+		}
+
+		$country = (string) $order->get_shipping_country();
+		if ( '' === $country ) {
+			$country = (string) $order->get_billing_country();
+		}
+		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), $country, $this->tax_follows_address ) ) {
+			return array( OrderValidator::DESTINATION_CHANGED, ShippingController::destinationNotice() );
+		}
+
+		return null;
+	}
+
+	/**
+	 * The order must not go on to wallee's payment step: order `failed`, row
+	 * `failed`, cart with a notice. If the money is already reserved or taken,
 	 * the merchant must void or refund it in the wallee portal.
 	 *
 	 * @param SessionRecord $record         Row.
 	 * @param \WC_Order     $order          Order.
-	 * @param int           $transaction_id wallee transaction ID.
-	 * @param string        $state          Transaction state.
+	 * @param string        $reason         Reason code (order note and log).
+	 * @param string        $notice         Customer notice.
+	 * @param int           $transaction_id wallee transaction ID, 0 if unknown.
+	 * @param string        $state          Transaction state, '' if unknown.
 	 */
-	private function failWithoutEmail( SessionRecord $record, \WC_Order $order, int $transaction_id, string $state ): string {
-		$this->log( sprintf( 'Return: session row %d order %d failed: no_email (transaction %d, state %s).', $record->id(), $order->get_id(), $transaction_id, '' === $state ? 'unknown' : $state ), 'error' );
+	private function failBeforePayment( SessionRecord $record, \WC_Order $order, string $reason, string $notice, int $transaction_id, string $state ): string {
+		$this->log( sprintf( 'Return: session row %d order %d failed: %s (transaction %d, state %s).', $record->id(), $order->get_id(), $reason, $transaction_id, '' === $state ? 'unknown' : $state ), 'error' );
 		try {
-			$this->orders->fail( $order, 'no_email' );
-			if ( in_array( $state, array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' ), true ) ) {
+			$this->orders->fail( $order, $reason );
+			if ( $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true ) ) {
 				$order->add_order_note(
 					sprintf(
-						/* translators: 1: wallee transaction ID, 2: transaction state. */
-						__( 'ACTION REQUIRED: wallee transaction %1$d is already %2$s (money reserved or taken), but this order failed because wallee returned no e-mail address. Void or refund transaction %1$d in the wallee portal.', 'wallee-express-checkout' ),
+						/* translators: 1: wallee transaction ID, 2: transaction state, 3: reason code. */
+						__( 'ACTION REQUIRED: wallee transaction %1$d is already %2$s (money reserved or taken), but this order failed (%3$s). Void or refund transaction %1$d in the wallee portal.', 'wallee-express-checkout' ),
 						$transaction_id,
-						$state
+						$state,
+						$reason
 					)
 				);
 				$this->log( sprintf( 'Return: order %d: wallee transaction %d must be voided or refunded in the wallee portal (state %s).', $order->get_id(), $transaction_id, $state ), 'error' );
@@ -393,7 +515,7 @@ final class ReturnHandler {
 		}
 		$this->markFailed( $record );
 
-		return $this->toCart( __( 'Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.', 'wallee-express-checkout' ) );
+		return $this->toCart( $notice );
 	}
 
 	/**

@@ -133,16 +133,15 @@ final class OrderFactory {
 	 * Writes addresses and e-mail of the transaction to the order.
 	 *
 	 * Every field is optional. A missing address is copied from the other one.
-	 * Whether a missing e-mail fails the order is the caller's decision (owner
-	 * decision, design amendment 2): this method only reports it.
+	 * Whether a missing e-mail or another destination fails the order is the
+	 * caller's decision: this method only writes the data.
 	 *
-	 * @param \WC_Order   $order         Order.
-	 * @param array       $transaction   Transaction read with billingAddress and shippingAddress expanded.
-	 * @param int         $customer_id   WordPress user ID, 0 for guests.
-	 * @param string|null $quote_country Country the shipping rate was calculated for.
+	 * @param \WC_Order $order       Order.
+	 * @param array     $transaction Transaction read with billingAddress and shippingAddress expanded.
+	 * @param int       $customer_id WordPress user ID, 0 for guests.
 	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country = null ): bool {
+	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
 		$billing  = self::address( isset( $transaction['billingAddress'] ) ? $transaction['billingAddress'] : null );
 		$shipping = self::address( isset( $transaction['shippingAddress'] ) ? $transaction['shippingAddress'] : null );
 		if ( ! self::has_values( $billing ) ) {
@@ -164,18 +163,6 @@ final class OrderFactory {
 		}
 
 		$order->save();
-
-		if ( null !== $quote_country && '' !== $quote_country && '' !== $shipping['country'] && 0 !== strcasecmp( $shipping['country'], $quote_country ) ) {
-			self::addNoteOnce(
-				$order,
-				sprintf(
-					/* translators: 1: country the shipping rate was calculated for, 2: country of the shipping address. */
-					__( 'The shipping address is in a different country (%2$s) than the one the shipping costs were calculated for (%1$s). Please check the shipping costs.', 'wallee-express-checkout' ),
-					strtoupper( $quote_country ),
-					$shipping['country']
-				)
-			);
-		}
 
 		return '' !== $order->get_billing_email();
 	}

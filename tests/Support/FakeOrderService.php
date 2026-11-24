@@ -67,11 +67,25 @@ class FakeOrderService extends OrderService {
 	public $failed = array();
 
 	/**
-	 * Calls of applyCustomer(): order ID, transaction, customer, quote country.
+	 * Calls of applyCustomer(): order ID, transaction, customer.
 	 *
 	 * @var array[]
 	 */
 	public $applied = array();
+
+	/**
+	 * Result of customerCoupons().
+	 *
+	 * @var string|null
+	 */
+	public $coupon_reason = null;
+
+	/**
+	 * Calls of customerCoupons(): the e-mail passed.
+	 *
+	 * @var string[]
+	 */
+	public $coupon_checks = array();
 
 	/**
 	 * E-mail applyCustomer() writes to the order.
@@ -126,16 +140,20 @@ class FakeOrderService extends OrderService {
 	}
 
 	/**
-	 * {@inheritDoc}
+	 * {@inheritDoc} Countries come from the transaction's addresses, each
+	 * falling back to the other, as in OrderFactory::applyCustomer().
 	 *
-	 * @param \WC_Order   $order         Order.
-	 * @param array       $transaction   Transaction.
-	 * @param int         $customer_id   Customer.
-	 * @param string|null $quote_country Country.
+	 * @param \WC_Order $order       Order.
+	 * @param array     $transaction Transaction.
+	 * @param int       $customer_id Customer.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
-		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id, $quote_country );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
+		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id );
 		$order->billing_email = $this->applied_email;
+		$shipping             = isset( $transaction['shippingAddress']['country'] ) ? (string) $transaction['shippingAddress']['country'] : '';
+		$billing              = isset( $transaction['billingAddress']['country'] ) ? (string) $transaction['billingAddress']['country'] : '';
+		$order->shipping_country = '' !== $shipping ? $shipping : $billing;
+		$order->billing_country  = '' !== $billing ? $billing : $shipping;
 
 		return '' !== $this->applied_email;
 	}
@@ -156,9 +174,20 @@ class FakeOrderService extends OrderService {
 	 * {@inheritDoc}
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
+	 */
+	public function stockAndCoupons( CartSnapshot $snapshot ): ?string {
+		return $this->stock_reason;
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
 	 * @param string       $email    E-mail.
 	 */
-	public function stockAndCoupons( CartSnapshot $snapshot, string $email ): ?string {
-		return $this->stock_reason;
+	public function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
+		$this->coupon_checks[] = $email;
+
+		return $this->coupon_reason;
 	}
 }

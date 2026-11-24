@@ -7,6 +7,7 @@
 
 namespace Wallee\ExpressCheckout\Http;
 
+use Wallee\ExpressCheckout\Order\OrderValidator;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Security\UrlSigner;
@@ -30,6 +31,11 @@ final class ShippingController {
 	const RATE_MAX       = 60;
 	const RATE_WINDOW    = 60;
 	const MAX_FIELD      = 200;
+
+	/**
+	 * A shipping link is accepted for 2 hours after the session was created.
+	 */
+	const MAX_AGE_SECONDS = 7200;
 
 	/**
 	 * Session storage.
@@ -137,8 +143,13 @@ final class ShippingController {
 	}
 
 	/**
-	 * Handles one callback. Order of checks: signature, row, state, body ids,
-	 * country, rate limit, calculation.
+	 * Handles one callback. Order of checks: signature, row, age, state, body
+	 * ids, country, rate limit, tax location, calculation.
+	 *
+	 * Taxes were fixed for the snapshot's tax location. Where WooCommerce
+	 * taxes by the customer's address, a destination outside that location
+	 * (country, and state when the location has one) gets no shipping
+	 * options, so the wallet cannot approve it.
 	 *
 	 * @param string $uuid Session UUID from the query.
 	 * @param string $sig  Signature from the query.
@@ -152,6 +163,9 @@ final class ShippingController {
 
 		$record = $this->repository->findByUuid( $uuid );
 		if ( null === $record ) {
+			return self::failure( 404, 'unknown_session' );
+		}
+		if ( $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
 			return self::failure( 404, 'unknown_session' );
 		}
 		if ( SessionRecord::CREATED !== $record->state() ) {
@@ -177,6 +191,15 @@ final class ShippingController {
 			'city'      => self::text( $body, 'city' ),
 			'address_1' => self::text( $body, 'street' ),
 		);
+
+		if ( OrderValidator::taxFollowsAddress() && ! OrderValidator::inTaxLocation( $record->snapshot(), $destination['country'], $destination['state'] ) ) {
+			call_user_func( $this->log, sprintf( 'No shipping options for session row %d: destination outside the tax location.', $record->id() ) );
+
+			return array(
+				'status' => 200,
+				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, self::destinationNotice() ),
+			);
+		}
 
 		try {
 			$rates = $this->provider->ratesFor( $record->snapshot(), $destination );
@@ -238,6 +261,14 @@ final class ShippingController {
 		} catch ( \Throwable $e ) {
 			call_user_func( $this->log, sprintf( 'Shipping quote could not be stored for session row %d (%s).', $record->id(), get_class( $e ) ), 'error' );
 		}
+	}
+
+	/**
+	 * Customer-facing message when express checkout cannot serve a destination
+	 * because the prices were taxed for another location.
+	 */
+	public static function destinationNotice(): string {
+		return __( 'Express checkout is not available for this destination. Please use the regular checkout.', 'wallee-express-checkout' );
 	}
 
 	/**
