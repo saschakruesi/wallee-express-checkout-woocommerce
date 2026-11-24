@@ -146,13 +146,21 @@ final class CustomerDetails {
 	 * order: it gets one private "ACTION REQUIRED" note. The checks run once;
 	 * later calls do not repeat them.
 	 *
-	 * @param SessionRecord $record Row.
-	 * @param \WC_Order     $order  Order of the row.
+	 * With $missing_email_fails (the background job), a missing e-mail gets
+	 * no note and the checks are not run: the caller fails the order for
+	 * `no_email` instead.
+	 *
+	 * @param SessionRecord $record              Row.
+	 * @param \WC_Order     $order               Order of the row.
+	 * @param bool          $missing_email_fails Whether the caller fails the order when the e-mail is missing.
 	 * @return array{transaction_id: int, state: string, email: bool}|null See collect().
 	 * @throws \Throwable See collect().
 	 */
-	public function collectAfterPayment( SessionRecord $record, \WC_Order $order ): ?array {
+	public function collectAfterPayment( SessionRecord $record, \WC_Order $order, bool $missing_email_fails = false ): ?array {
 		$result = $this->collect( $record, $order );
+		if ( null !== $result && ! $result['email'] && $missing_email_fails ) {
+			return $result;
+		}
 		if ( null !== $result && ! $result['email'] ) {
 			$this->orders->addNoteOnce( $order, __( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', 'wallee-express-checkout' ) );
 			call_user_func( $this->log, sprintf( 'Order %d: no e-mail address from wallee; order kept with a note.', $order->get_id() ), 'warning' );

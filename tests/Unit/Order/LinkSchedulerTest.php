@@ -224,16 +224,139 @@ class LinkSchedulerTest extends TestCase {
 		$this->assertSame( 'wallee_7', $this->order->get_payment_method() );
 	}
 
-	public function test_missing_email_after_payment_keeps_the_order_with_one_note() {
+	/**
+	 * The return could not read the transaction (checks deferred); the
+	 * customer's browser never came back.
+	 */
+	private function late_authorization_without_email( string $state ): void {
+		$this->order->meta[ CustomerDetails::META_CHECKS_PENDING ] = 'yes';
+		$this->orders->applied_email                               = '';
+		$this->api->transaction['state']                           = $state;
+	}
+
+	public function test_a_late_authorization_without_email_fails_the_order_and_voids_the_reservation() {
+		$this->late_authorization_without_email( 'AUTHORIZED' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertSame( 'no_email', FailedOrderSettlement::failedReason( $this->order ) );
+		$this->assertSame( array( 'getSession', 'getTransaction', 'voidTransaction' ), $this->api->methods() );
+		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( 'wallee_express_checkout', $this->order->get_payment_method(), 'not linked' );
+		$this->assertSame( array(), $this->adapter->links );
+		$this->assertSame( array(), $this->scheduled, 'settled: no further attempt' );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'void of transaction 629017977 was requested automatically because this order failed (no_email)', $this->order->notes[0] );
+		$this->assertNotContains( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', $this->order->notes );
+		$this->assertStringContainsString( 'error: Order 501: no e-mail address from wallee (transaction 629017977, state AUTHORIZED); order failed (no_email).', implode( "\n", $this->adapter->logs ) );
+	}
+
+	public function test_a_late_authorization_whose_void_fails_gets_the_action_required_note() {
+		$this->late_authorization_without_email( 'AUTHORIZED' );
+		$this->api->void = new ApiException( 'refused', 409 );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertStringStartsWith( 'ACTION REQUIRED: wallee transaction 629017977 is AUTHORIZED', $this->order->notes[0] );
+		$this->assertSame( array(), $this->scheduled );
+	}
+
+	public function test_a_late_capture_without_email_fails_the_order_and_asks_for_a_refund() {
+		$this->late_authorization_without_email( 'FULFILL' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertStringContainsString( 'A refund is needed', $this->order->notes[0] );
+		$this->assertSame( array(), $this->scheduled );
+	}
+
+	public function test_an_undecided_payment_without_email_fails_the_order_and_voids_once_authorized() {
+		$this->late_authorization_without_email( 'PROCESSING' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertSame( array( array( 501, 10, false ) ), $this->scheduled, 'checked again' );
+
+		$this->order->status             = 'failed';
+		$this->api->calls                = array();
+		$this->api->transaction['state'] = 'AUTHORIZED';
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( 'getTransaction', 'voidTransaction' ), $this->api->methods() );
+		$this->assertCount( 1, $this->scheduled );
+	}
+
+	public function test_the_background_fails_an_order_without_email_also_without_the_pending_mark() {
 		$this->orders->applied_email = '';
 
 		$this->scheduler()->run( 501 );
-		unset( $this->order->meta['_wallee_ec_transaction_id'] );
-		$this->order->payment_method = 'wallee_express_checkout';
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed, 'an e-mail was never seen for this order' );
+	}
+
+	public function test_a_transaction_that_ended_stops_the_retries_with_one_clear_note() {
+		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+		$this->adapter->gateway                         = null;
+		$this->adapter->state                           = 'FAILED';
+
+		$this->scheduler()->run( 501 );
 		$this->scheduler()->run( 501 );
 
-		$this->assertSame( array(), $this->orders->failed );
-		$this->assertSame( array( 'The payment is approved, but wallee returned no valid e-mail address for the customer.' ), $this->order->notes );
+		$this->assertSame( array(), $this->scheduled, 'no further attempt' );
+		$this->assertSame( array( 629017977 ), $this->adapter->reads, 'the second run reads nothing' );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'ended in state FAILED, so no money was taken', $this->order->notes[0] );
+		$this->assertSame( '', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
+		$this->assertSame( array(), $this->orders->failed, 'the status is left to the merchant' );
+	}
+
+	public function test_an_unexpected_error_in_a_run_is_logged_by_class_and_retried() {
+		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+		Functions\when( 'WC' )->alias(
+			static function () {
+				throw new \RuntimeException( 'secret detail' );
+			}
+		);
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array( array( 501, 10, false ) ), $this->scheduled );
+		$logs = implode( "\n", $this->adapter->logs );
+		$this->assertStringContainsString( 'error: Order 501: link attempt 1 stopped by an error (RuntimeException).', $logs );
+		$this->assertStringNotContainsString( 'secret detail', $logs );
+	}
+
+	public function test_an_unexpected_error_on_the_last_attempt_ends_with_the_usual_log() {
+		$this->order->meta['_wallee_ec_transaction_id']    = 629017977;
+		$this->order->meta[ LinkScheduler::META_ATTEMPTS ] = 5;
+		Functions\when( 'WC' )->alias(
+			static function () {
+				throw new \RuntimeException( 'x' );
+			}
+		);
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertStringContainsString( 'not linked after 6 attempts', implode( "\n", $this->adapter->logs ) );
+	}
+
+	public function test_an_attempt_counter_that_cannot_be_saved_stops_the_chain_with_an_error_log() {
+		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+		$this->adapter->gateway                         = null;
+		$this->adapter->state                           = 'PROCESSING';
+		$this->order->save_error                        = new \RuntimeException( 'db gone' );
+
+		$this->scheduler()->run( 501 );
+
+		$this->assertSame( array(), $this->scheduled, 'no endless chain without a counter' );
+		$this->assertStringContainsString( 'error: Order 501: link attempt counter not saved (RuntimeException); no further automatic attempt.', implode( "\n", $this->adapter->logs ) );
 	}
 
 	public function test_checks_skipped_at_return_are_repeated_even_with_a_known_transaction() {

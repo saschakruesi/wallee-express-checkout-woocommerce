@@ -198,6 +198,12 @@ final class ResultHandler {
 
 			return $this->toCart( $this->failedOrderNotice( $order ) );
 		}
+		// The background job may have failed the order (owner-decided reason) while the row stayed processed.
+		if ( '' !== FailedOrderSettlement::failedReason( $order ) ) {
+			$this->log( sprintf( 'Result: success ignored for order %d, which failed (%s).', $order->get_id(), FailedOrderSettlement::failedReason( $order ) ), 'warning' );
+
+			return $this->toCart( $this->failedOrderNotice( $order ) );
+		}
 
 		// The customer may have paid: a missing e-mail only gets a note here.
 		$transaction_id = $this->transactionId( $record, $order );

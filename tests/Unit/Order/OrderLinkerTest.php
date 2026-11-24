@@ -165,4 +165,28 @@ class OrderLinkerTest extends TestCase {
 			$this->assertSame( 'yes', $order->get_meta( OrderLinker::META_UNRESOLVED ), $state );
 		}
 	}
+
+	public function test_a_transaction_that_ended_without_money_gets_one_clear_note_and_no_link() {
+		foreach ( array( 'FAILED', 'DECLINE', 'VOIDED' ) as $state ) {
+			$order                = new \WC_Order( 502, 1.0 );
+			$this->adapter->state = $state;
+			$this->adapter->links = array();
+
+			$this->assertFalse( $this->linker()->link( $order, 629017977 ), $state );
+			$this->assertFalse( $this->linker()->link( $order, 629017977, true ), $state . ', last attempt' );
+
+			$this->assertSame( array(), $this->adapter->links, 'not linked: ' . $state );
+			$this->assertSame( array( 'wallee Express Checkout: wallee transaction 629017977 ended in state ' . $state . ', so no money was taken for this order. The order is not linked to the wallee plugin and needs no refund.' ), $order->notes );
+			$this->assertSame( '', $order->get_meta( OrderLinker::META_UNRESOLVED ), 'no "complete and refund in the portal" note' );
+			$this->assertSame( $state, $order->get_meta( OrderLinker::META_PAYMENT_ENDED ) );
+			$this->assertTrue( OrderLinker::paymentEnded( $order ) );
+			$this->assertSame( 'wallee_express_checkout', $order->get_payment_method() );
+		}
+	}
+
+	public function test_an_ended_payment_is_not_recognised_for_other_states() {
+		$this->assertFalse( OrderLinker::paymentEnded( $this->order ) );
+		$this->assertFalse( OrderLinker::notePaymentEnded( $this->order, 629017977, 'AUTHORIZED' ) );
+		$this->assertSame( array(), $this->order->notes );
+	}
 }

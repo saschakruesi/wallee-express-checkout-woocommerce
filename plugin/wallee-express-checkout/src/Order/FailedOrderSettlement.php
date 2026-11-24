@@ -25,7 +25,8 @@ defined( 'ABSPATH' ) || exit;
  *   says a refund is needed.
  * - PROCESSING, CONFIRMED, PENDING, CREATE or unknown (undecided): nothing
  *   now; the caller checks again later.
- * - FAILED, DECLINE, VOIDED: nothing to do.
+ * - FAILED, DECLINE, VOIDED: nothing to do but one note stating the state
+ *   (unless the add-on's own void explains it).
  *
  * Notes and logs carry order and transaction IDs, states, reason codes and
  * exception classes only.
@@ -158,7 +159,16 @@ final class FailedOrderSettlement {
 			return self::TAKEN;
 		}
 		if ( in_array( $state, self::STATES_ENDED, true ) ) {
-			return 'requested' === $void ? self::RELEASED : self::NONE;
+			if ( 'requested' === $void ) {
+				return self::RELEASED;
+			}
+			try {
+				OrderLinker::notePaymentEnded( $order, $transaction_id, $state );
+			} catch ( \Throwable $e ) {
+				$this->log( sprintf( 'Order %d: note not added (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+			}
+
+			return self::NONE;
 		}
 
 		return self::OPEN;

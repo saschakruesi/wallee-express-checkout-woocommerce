@@ -387,6 +387,22 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( array( 'error: Express checkout is not available for the selected delivery address. The reservation on your payment method is being released. You will not be charged. Please use the regular checkout to complete your order.' ), $this->notices );
 	}
 
+	public function test_success_for_a_processed_row_whose_order_the_background_failed_is_not_linked() {
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'no_email' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'AUTHORIZED',
+		);
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertSame( array(), $this->adapter->links, 'not linked' );
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$this->assertSame( 'failed', $this->order->status );
+		$this->assertStringContainsString( 'The reservation on your payment method is being released.', $this->notices[0] );
+	}
+
 	public function test_success_for_an_order_failed_for_an_owner_reason_with_money_taken_says_so() {
 		$this->repository     = $this->row( 'cart', array( 'state' => 'failed' ) );
 		$this->order->status  = 'failed';

@@ -31,6 +31,7 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $currency             = '';
 		public $customer_id          = 0;
 		public $products             = array();
+		public $save_error           = null;
 
 		public function __construct( int $id = 0, $total = 0.0 ) {
 			$this->id    = $id;
@@ -152,6 +153,9 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		}
 
 		public function save() {
+			if ( null !== $this->save_error ) {
+				throw $this->save_error;
+			}
 			++$this->saves;
 			return $this->id;
 		}

@@ -175,11 +175,24 @@ class FailedOrderSettlementTest extends TestCase {
 		);
 	}
 
-	public function test_a_payment_that_ended_without_money_needs_nothing() {
+	public function test_a_payment_that_ended_without_money_needs_nothing_but_one_note() {
 		foreach ( array( 'FAILED', 'DECLINE', 'VOIDED' ) as $state ) {
-			$this->assertSame( FailedOrderSettlement::NONE, $this->settlement()->settle( $this->order, self::TRANSACTION, $state ), $state );
+			$order         = new \WC_Order( 503, 1.0 );
+			$order->status = 'failed';
+			FailedOrderSettlement::markFailed( $order, 'no_email' );
+
+			$this->assertSame( FailedOrderSettlement::NONE, $this->settlement()->settle( $order, self::TRANSACTION, $state ), $state );
+			$this->assertSame( FailedOrderSettlement::NONE, $this->settlement()->settle( $order, self::TRANSACTION, $state ), $state . ' again' );
+			$this->assertCount( 1, $order->notes, $state );
+			$this->assertStringContainsString( 'ended in state ' . $state . ', so no money was taken', $order->notes[0] );
 		}
 		$this->assertSame( array(), $this->voids() );
+	}
+
+	public function test_a_void_that_went_through_gets_no_second_note() {
+		$this->order->meta['_wallee_ec_void'] = 'requested';
+
+		$this->assertSame( FailedOrderSettlement::RELEASED, $this->settlement()->settle( $this->order, self::TRANSACTION, 'VOIDED' ) );
 		$this->assertSame( array(), $this->order->notes );
 	}
 
