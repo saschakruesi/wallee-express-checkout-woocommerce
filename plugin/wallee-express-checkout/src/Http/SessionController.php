@@ -363,17 +363,22 @@ final class SessionController {
 
 	/**
 	 * Response body for a token: the token and when its wallee session
-	 * expires, so the page can renew it in time.
+	 * expires, so the page can renew it in time. `expiresIn` is the remaining
+	 * lifetime in seconds by the server's clock; the page counts it down
+	 * from the moment it sent the request and never compares it with the
+	 * browser's clock. `expiresAt` stays for information.
 	 *
-	 * @param string $token      Session token.
-	 * @param string $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
-	 * @return array{sessionToken: string, expiresAt?: string}
+	 * @param string   $token      Session token.
+	 * @param string   $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
+	 * @param int|null $now        Current Unix time, null for the server's clock.
+	 * @return array{sessionToken: string, expiresAt?: string, expiresIn?: int}
 	 */
-	public static function tokenResponse( string $token, string $created_at ): array {
+	public static function tokenResponse( string $token, string $created_at, ?int $now = null ): array {
 		$body    = array( 'sessionToken' => $token );
 		$expires = self::expiresAt( $created_at );
 		if ( null !== $expires ) {
 			$body['expiresAt'] = $expires;
+			$body['expiresIn'] = max( 0, (int) strtotime( $expires ) - ( null === $now ? time() : $now ) );
 		}
 
 		return $body;

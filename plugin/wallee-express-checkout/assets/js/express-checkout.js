@@ -14,11 +14,13 @@
 	const context = config.context;
 	const containerId = 'wallee-ec-container-' + context;
 
-	// wallee sessions die 30 minutes after creation. The server says when
-	// (expiresAt); the page renews 15 minutes before that, since a wallet flow
-	// was observed to take 11 minutes. Without a usable expiresAt it renews
-	// 15 minutes after load. The delay is kept between 1 and 15 minutes, so a
-	// wrong client clock cannot make it loop or wait too long.
+	// wallee sessions die 30 minutes after creation. The server says how
+	// many seconds are left (expiresIn, by its own clock); the page counts
+	// that down from the moment it sent the request and renews 15 minutes
+	// before the end, since a wallet flow was observed to take 11 minutes.
+	// The browser's clock is never compared with the server's. Without a
+	// usable expiresIn it renews 15 minutes after the request. The delay is
+	// kept between 1 and 15 minutes, so it can neither loop nor wait too long.
 	const MINUTE_MS = 60 * 1000;
 	const REFRESH_LEAD_MS = 15 * MINUTE_MS;
 	const REFRESH_MAX_MS = 15 * MINUTE_MS;
@@ -34,7 +36,8 @@
 	let controller = null;
 	let sequence = 0;
 	let refreshTimer = null;
-	let refreshAt = 0;
+	let refreshStart = null;
+	let refreshAfter = 0;
 	let refreshDue = false;
 	let overlayOpen = false;
 	let refresh = null;
@@ -65,10 +68,40 @@
 		};
 	}
 
+	function monotonicNow() {
+		return window.performance && typeof window.performance.now === 'function' ? window.performance.now() : NaN;
+	}
+
+	/**
+	 * A point in time to measure elapsed time from.
+	 *
+	 * @return {{mono: number, wall: number}} Monotonic and wall-clock readings.
+	 */
+	function startClock() {
+		return { mono: monotonicNow(), wall: Date.now() };
+	}
+
+	/**
+	 * Milliseconds since a startClock() reading. The monotonic clock
+	 * (performance.now) is the measure; the wall clock only counts when it
+	 * shows more time passed (some browsers stop the monotonic clock while
+	 * the computer sleeps). So a wrong or adjusted browser clock can make a
+	 * renewal come earlier, never later.
+	 *
+	 * @param {{mono: number, wall: number}} start Reading.
+	 * @return {number} Elapsed milliseconds, 0 or more.
+	 */
+	function elapsedSince( start ) {
+		const mono = monotonicNow() - start.mono;
+		const wall = Date.now() - start.wall;
+		return Math.max( 0, isFinite( mono ) ? mono : 0, isFinite( wall ) ? wall : 0 );
+	}
+
 	function clearRefresh() {
 		window.clearTimeout( refreshTimer );
 		refreshTimer = null;
-		refreshAt = 0;
+		refreshStart = null;
+		refreshAfter = 0;
 		refreshDue = false;
 	}
 
@@ -98,15 +131,16 @@
 	/**
 	 * Milliseconds until the session should be renewed.
 	 *
-	 * @param {*} expiresAt ISO-8601 UTC expiry from the server, may be missing.
+	 * @param {*}      expiresIn Seconds the session had left when the server answered, may be missing.
+	 * @param {number} elapsed   Milliseconds since the request was sent.
 	 * @return {number} Delay.
 	 */
-	function refreshDelay( expiresAt ) {
-		const expires = typeof expiresAt === 'string' ? Date.parse( expiresAt ) : NaN;
-		if ( ! isFinite( expires ) ) {
+	function refreshDelay( expiresIn, elapsed ) {
+		const seconds = typeof expiresIn === 'number' ? expiresIn : NaN;
+		if ( ! isFinite( seconds ) || seconds < 0 ) {
 			return REFRESH_MAX_MS;
 		}
-		return Math.min( REFRESH_MAX_MS, Math.max( REFRESH_MIN_MS, expires - REFRESH_LEAD_MS - Date.now() ) );
+		return Math.min( REFRESH_MAX_MS, Math.max( REFRESH_MIN_MS, seconds * 1000 - REFRESH_LEAD_MS - elapsed ) );
 	}
 
 	/**
@@ -123,10 +157,27 @@
 		}
 	}
 
-	function scheduleRefresh( expiresAt ) {
+	/**
+	 * The wallet overlay closed or the customer cancelled the wallet: a
+	 * renewal that came due while it was open runs now.
+	 */
+	function overlayClosed() {
+		overlayOpen = false;
+		if ( refreshDue ) {
+			refreshDue = false;
+			runRefresh();
+		}
+	}
+
+	/**
+	 * @param {*}                            expiresIn Seconds left, from the server.
+	 * @param {{mono: number, wall: number}} requested Reading taken when the request was sent.
+	 */
+	function scheduleRefresh( expiresIn, requested ) {
 		clearRefresh();
-		const delay = refreshDelay( expiresAt );
-		refreshAt = Date.now() + delay;
+		const delay = refreshDelay( expiresIn, elapsedSince( requested ) );
+		refreshStart = startClock();
+		refreshAfter = delay;
 		refreshTimer = window.setTimeout( runRefresh, delay );
 	}
 
@@ -151,7 +202,7 @@
 		return null;
 	}
 
-	function render( token, expiresAt ) {
+	function render( token, expiresIn, requested ) {
 		const handler = window.ExpressCheckoutHandler;
 		if ( ! handler || typeof handler.load !== 'function' ) {
 			showError();
@@ -164,15 +215,18 @@
 			onError: function () {
 				showError();
 			},
-			// The customer closed a wallet sheet: keep the buttons.
-			onCancel: function () {},
+			// The customer closed a wallet sheet: keep the buttons, and run a
+			// renewal that was postponed while the sheet was open.
+			onCancel: function () {
+				overlayClosed();
+			},
 		};
 		if ( config.maxRows !== undefined && Number( config.maxRows ) > 0 ) {
 			options.maxRows = Number( config.maxRows );
 		}
 		try {
 			Promise.resolve( handler.load( containerId, token, options ) ).catch( showError );
-			scheduleRefresh( expiresAt );
+			scheduleRefresh( expiresIn, requested );
 		} catch ( e ) {
 			showError();
 		}
@@ -189,6 +243,7 @@
 		cancelPending();
 		emptyContainer();
 		const mine = sequence;
+		const requested = startClock();
 		controller = typeof window.AbortController === 'function' ? new window.AbortController() : null;
 
 		try {
@@ -211,7 +266,7 @@
 				return;
 			}
 			if ( data && typeof data.sessionToken === 'string' && data.sessionToken !== '' ) {
-				render( data.sessionToken, data.expiresAt );
+				render( data.sessionToken, data.expiresIn, requested );
 			} else {
 				showError();
 			}
@@ -408,7 +463,7 @@
 	function init() {
 		// Timers are throttled in background tabs: catch up when visible again.
 		document.addEventListener( 'visibilitychange', function () {
-			if ( document.visibilityState === 'visible' && refreshAt && Date.now() >= refreshAt ) {
+			if ( document.visibilityState === 'visible' && refreshStart && elapsedSince( refreshStart ) >= refreshAfter ) {
 				runRefresh();
 			}
 		} );
@@ -417,10 +472,10 @@
 			if ( open === null ) {
 				return;
 			}
-			overlayOpen = open;
-			if ( ! open && refreshDue ) {
-				refreshDue = false;
-				runRefresh();
+			if ( open ) {
+				overlayOpen = true;
+			} else {
+				overlayClosed();
 			}
 		} );
 		whenRootExists( function () {

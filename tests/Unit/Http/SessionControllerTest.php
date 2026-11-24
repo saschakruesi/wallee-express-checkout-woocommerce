@@ -287,6 +287,7 @@ class SessionControllerTest extends TestCase {
 			array(
 				'sessionToken' => 'tok',
 				'expiresAt'    => '2026-11-24T10:30:00Z',
+				'expiresIn'    => max( 0, strtotime( '2026-11-24 10:30:00 UTC' ) - time() ),
 			),
 			$this->controller->reusableSession( $this->entry(), 'cart', 'h1' ),
 			'the expiry comes from the row, not from the reuse'
@@ -312,10 +313,19 @@ class SessionControllerTest extends TestCase {
 			array(
 				'sessionToken' => 't',
 				'expiresAt'    => '2026-11-24T10:30:00Z',
+				'expiresIn'    => 1200,
 			),
-			SessionController::tokenResponse( 't', '2026-11-24 10:00:00' )
+			SessionController::tokenResponse( 't', '2026-11-24 10:00:00', strtotime( '2026-11-24 10:10:00 UTC' ) )
 		);
 		$this->assertSame( array( 'sessionToken' => 't' ), SessionController::tokenResponse( 't', 'nope' ) );
+	}
+
+	public function test_token_response_gives_the_remaining_lifetime_in_seconds_never_below_zero() {
+		$now = strtotime( '2026-11-24 10:00:00 UTC' );
+
+		$this->assertSame( 1800, SessionController::tokenResponse( 't', '2026-11-24 10:00:00', $now )['expiresIn'], 'fresh session' );
+		$this->assertSame( 0, SessionController::tokenResponse( 't', '2026-11-24 09:00:00', $now )['expiresIn'], 'expired' );
+		$this->assertEqualsWithDelta( 1800, SessionController::tokenResponse( 't', gmdate( 'Y-m-d H:i:s' ) )['expiresIn'], 2, 'server clock by default' );
 	}
 
 	public function test_reuse_refuses_changed_hash_context_age_and_used_row() {
