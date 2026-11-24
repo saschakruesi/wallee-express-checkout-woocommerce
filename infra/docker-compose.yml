@@ -60,6 +60,7 @@ services:
     environment:
       <<: *wp-environment
       WP_ADMIN_PASSWORD: ${WP_ADMIN_PASSWORD:-}
+      WP_CLI_CACHE_DIR: /tmp/wp-cli-cache
     volumes:
       - wp_data:/var/www/html
       - ../plugin/wallee-express-checkout:/var/www/html/wp-content/plugins/wallee-express-checkout

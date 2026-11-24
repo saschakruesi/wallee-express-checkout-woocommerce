@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."   # infra/
 WALLEE_TAG=3.4.11
 # Newest WooCommerce that still supports the WordPress 6.x image (11.1+ needs WordPress 7.0).
 WOOCOMMERCE_VERSION=11.0.1
-dc() { docker compose --env-file /opt/wallee-ec/.env "$@"; }
+dc() { docker compose --progress quiet --env-file /opt/wallee-ec/.env "$@"; }
 wp() { dc --profile tools run --rm -T wpcli wp "$@"; }
 
 dc up -d db wordpress
@@ -25,7 +25,7 @@ if ! wp core is-installed 2>/dev/null; then
 fi
 
 wp rewrite structure '/%postname%/' >/dev/null
-wp rewrite flush --hard >/dev/null || true
+wp rewrite flush >/dev/null
 
 wp plugin is-installed woocommerce || wp plugin install woocommerce --version="$WOOCOMMERCE_VERSION"
 wp plugin is-active woocommerce || wp plugin activate woocommerce
@@ -45,5 +45,5 @@ wp theme activate storefront
 
 wp option update admin_email admin@example.com >/dev/null
 wp eval-file /seed/seed-shop.php
-wp rewrite flush --hard >/dev/null || true
+wp rewrite flush >/dev/null
 echo "shop provisioned"
