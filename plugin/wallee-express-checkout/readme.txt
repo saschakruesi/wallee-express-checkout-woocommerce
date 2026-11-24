@@ -80,6 +80,12 @@ Version 0.1.1 fixes weaknesses found in a security review of 0.1.0. Update from 
 * Newer main plugin versions than 3.4.11 run with an admin warning until tested.
 * Not yet done (planned follow-ups): a personal-data exporter and eraser for the add-on's session table (rows are deleted after 7 days), atomic rate-limit counters, and Subresource Integrity for wallee's script. Prices: the price approved in the wallet applies even if the shop price changed during the wallet flow (owner decision).
 
+== Privacy ==
+
+* Personal data export and erasure (Tools > Export Personal Data / Erase Personal Data) include the add-on's data of a person's express orders, found like WooCommerce does it (orders with that billing e-mail or of the user account with that e-mail). The export lists each session record (order, creation time, state, wallee session and transaction IDs, the tax location used for the prices and the delivery destination chosen in the wallet) and the add-on's order meta (wallet, environment, wallee IDs, failure reason, void and refund flags). The eraser deletes finished session records (completed or failed); a record whose payment may still be in progress is kept and reported, and is deleted by the daily cleanup like every other record 7 days after its creation. Orders and order meta are not deleted by the add-on; WooCommerce's own eraser handles the order.
+* Session records without an order cannot be linked to a person and are only removed by the daily cleanup (7 days).
+* The add-on suggests a section for the privacy policy (Settings > Privacy > Policy Guide).
+
 == Apple Pay ==
 
 Apple Pay Express Checkout needs the shop's host name to be registered in the wallee portal:
