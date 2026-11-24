@@ -158,6 +158,18 @@ class TaxDestinationTest extends TestCase {
 		$this->assertSame( TaxDestination::DIFFERENT, TaxDestination::compare( $snapshot, self::address( 'US', 'Calif.', '10001' ) ) );
 	}
 
+	public function test_equal_rates_stored_in_separate_rows_are_the_same() {
+		\WC_Tax::$rows   = array(
+			\WC_Tax::row( 60, 'US', '', 6.0, array( 'state' => 'CA' ) ),
+			\WC_Tax::row( 61, 'US', '', 6.0, array( 'state' => 'NY' ) ),
+			\WC_Tax::row( 62, 'US', '', 5.0, array( 'state' => 'TX' ) ),
+		);
+		$snapshot = $this->snapshot( array( 'country' => 'US', 'state' => 'CA', 'postcode' => '', 'city' => '' ) );
+
+		$this->assertTrue( TaxDestination::sameRates( $snapshot, self::address( 'US', 'NY' ) ) );
+		$this->assertFalse( TaxDestination::sameRates( $snapshot, self::address( 'US', 'TX' ) ) );
+	}
+
 	public function test_postcode_specific_rates_refuse_another_postcode_in_the_same_country() {
 		\WC_Tax::$rows[] = \WC_Tax::row( 30, 'ES', '', 21.0 );
 		\WC_Tax::$rows[] = \WC_Tax::row( 31, 'ES', '', 7.0, array( 'postcode' => '35*' ) );

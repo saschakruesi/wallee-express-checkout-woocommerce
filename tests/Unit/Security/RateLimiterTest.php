@@ -239,4 +239,99 @@ class RateLimiterTest extends TestCase {
 		$this->assertCount( 1, $db->queries );
 		$this->assertMatchesRegularExpression( '/^DELETE FROM wp_wallee_ec_rate WHERE expires_at < \d+$/', $db->queries[0] );
 	}
+	/**
+	 * Database double for claimOnce(): INSERT IGNORE on a primary key.
+	 *
+	 * @param bool $fail Whether the statement fails.
+	 */
+	private static function claim_db( bool $fail = false ): \wpdb {
+		return new class( $fail ) extends \wpdb {
+			/**
+			 * Table prefix.
+			 *
+			 * @var string
+			 */
+			public $prefix = 'wp_';
+
+			/**
+			 * Buckets present.
+			 *
+			 * @var array<string, int>
+			 */
+			public $rows = array();
+
+			/**
+			 * Statements.
+			 *
+			 * @var string[]
+			 */
+			public $queries = array();
+
+			/**
+			 * Arguments of the last prepare().
+			 *
+			 * @var array
+			 */
+			private $args = array();
+
+			/**
+			 * Whether query() fails.
+			 *
+			 * @var bool
+			 */
+			private $fail;
+
+			/**
+			 * Constructor.
+			 *
+			 * @param bool $fail Whether query() fails.
+			 */
+			public function __construct( bool $fail ) {
+				$this->fail = $fail;
+			}
+
+			/**
+			 * Records the arguments.
+			 *
+			 * @param string $query   Query.
+			 * @param mixed  ...$args Values.
+			 */
+			public function prepare( $query, ...$args ) {
+				$this->args = $args;
+				return 'PREPARED ' . $query;
+			}
+
+			/**
+			 * INSERT IGNORE: 1 row for a new bucket, 0 for an existing one.
+			 *
+			 * @param string $query SQL.
+			 */
+			public function query( $query ) {
+				$this->queries[] = $query;
+				if ( $this->fail ) {
+					return false;
+				}
+				if ( isset( $this->rows[ $this->args[0] ] ) ) {
+					return 0;
+				}
+				$this->rows[ $this->args[0] ] = $this->args[1];
+
+				return 1;
+			}
+		};
+	}
+
+	public function test_a_claim_succeeds_once_per_name() {
+		$db = self::claim_db();
+
+		$this->assertTrue( RateLimiter::claimOnce( $db, 'void|501', 3600 ) );
+		$this->assertFalse( RateLimiter::claimOnce( $db, 'void|501', 3600 ) );
+		$this->assertTrue( RateLimiter::claimOnce( $db, 'void|502', 3600 ) );
+		$this->assertStringStartsWith( 'PREPARED INSERT IGNORE INTO wp_wallee_ec_rate (bucket, hits, expires_at) VALUES (%s, 1, %d)', $db->queries[0] );
+		$this->assertArrayHasKey( md5( 'once|void|501' ), $db->rows );
+	}
+
+	public function test_a_claim_without_a_database_answer_is_unknown() {
+		$this->assertNull( RateLimiter::claimOnce( self::claim_db( true ), 'void|501', 3600 ) );
+	}
 }

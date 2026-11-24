@@ -9,6 +9,8 @@
 namespace Wallee\ExpressCheckout\Order;
 
 use Wallee\ExpressCheckout\Api\ApiClient;
+use Wallee\ExpressCheckout\Plugin;
+use Wallee\ExpressCheckout\Security\RateLimiter;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -18,9 +20,14 @@ defined( 'ABSPATH' ) || exit;
  * This class settles that money:
  *
  * - AUTHORIZED (reserved): a void is requested once per order, through the
- *   add-on's API client (`POST /v2.0/payment/transactions/{id}/void-online`).
- *   A request wallee accepts gets a private note; a failure gets an "ACTION
- *   REQUIRED" note to void the transaction manually.
+ *   add-on's API client (`POST /v2.0/payment/transactions/{id}/void-online`),
+ *   and only while the order is still failed. "Once" is an atomic claim in
+ *   the database, so two requests (background job and admin view) cannot
+ *   both send it. A request wallee accepts gets a private note; a failure
+ *   gets an "ACTION REQUIRED" note to void the transaction manually, or to
+ *   refund it when the transaction has been completed meanwhile. An order
+ *   whose status was changed since it failed is not voided; it gets an
+ *   "ACTION REQUIRED" note.
  * - COMPLETED or FULFILL (taken): never touched; one "ACTION REQUIRED" note
  *   says a refund is needed.
  * - PROCESSING, CONFIRMED, PENDING, CREATE or unknown (undecided): nothing
@@ -91,14 +98,45 @@ final class FailedOrderSettlement {
 	private $log;
 
 	/**
+	 * Claims the one void of an order: function ( int $order_id ): ?bool
+	 * (true: claimed by this call; false: claimed before; null: unknown).
+	 *
+	 * @var callable
+	 */
+	private $claim;
+
+	/**
+	 * How long a void claim is kept, in seconds: 90 days (longer than an authorisation lives).
+	 */
+	const CLAIM_TTL = 7776000;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param ApiClient $api API client.
-	 * @param callable  $log Logger: function ( string $message, string $level ).
+	 * @param ApiClient     $api   API client.
+	 * @param callable      $log   Logger: function ( string $message, string $level ).
+	 * @param callable|null $claim Claims the one void of an order: function ( int $order_id ): ?bool.
+	 *                             Default: an atomic claim in the add-on's table (claimVoid()).
 	 */
-	public function __construct( ApiClient $api, callable $log ) {
-		$this->api = $api;
-		$this->log = $log;
+	public function __construct( ApiClient $api, callable $log, ?callable $claim = null ) {
+		$this->api   = $api;
+		$this->log   = $log;
+		$this->claim = null === $claim ? array( self::class, 'claimVoid' ) : $claim;
+	}
+
+	/**
+	 * The default void claim: RateLimiter::claimOnce() on WordPress's database.
+	 *
+	 * @param int $order_id Order ID.
+	 * @return bool|null See RateLimiter::claimOnce(); true without a WordPress database (unit context).
+	 */
+	public static function claimVoid( int $order_id ): ?bool {
+		global $wpdb;
+		if ( ! $wpdb instanceof \wpdb ) {
+			return true;
+		}
+
+		return RateLimiter::claimOnce( $wpdb, 'void|' . $order_id, self::CLAIM_TTL );
 	}
 
 	/**
@@ -149,6 +187,9 @@ final class FailedOrderSettlement {
 		if ( 'AUTHORIZED' === $state ) {
 			if ( '' !== $void ) {
 				return 'requested' === $void ? self::RELEASED : self::RESERVED;
+			}
+			if ( ! $order->has_status( 'failed' ) ) {
+				return $this->skipVoid( $order, $transaction_id, $reason );
 			}
 
 			return $this->void( $order, $transaction_id, $reason );
@@ -217,36 +258,95 @@ final class FailedOrderSettlement {
 		if ( '' === $reason ) {
 			return;
 		}
-		$order->add_order_note(
-			sprintf(
-				/* translators: 1: reason code, 2: new order status. */
-				__( 'ACTION REQUIRED: this express order failed (%1$s), but its status was then set to %2$s (for example by a payment update). Check the wallee transaction before shipping; void or refund it in the wallee portal if the order must not be delivered.', 'wallee-express-checkout' ),
-				$reason,
-				preg_replace( '/[^a-z0-9_\-]/', '', strtolower( $to ) )
-			)
-		);
+		try {
+			$order->add_order_note(
+				sprintf(
+					/* translators: 1: reason code, 2: new order status. */
+					__( 'ACTION REQUIRED: this express order failed (%1$s), but its status was then set to %2$s (for example by a payment update). Check the wallee transaction before shipping; void or refund it in the wallee portal if the order must not be delivered.', 'wallee-express-checkout' ),
+					$reason,
+					preg_replace( '/[^a-z0-9_\-]/', '', strtolower( $to ) )
+				)
+			);
+		} catch ( \Throwable $e ) {
+			// Runs inside the main plugin's webhook: never let the note break it.
+			try {
+				Plugin::adapter()->log( sprintf( 'Order %d: revival note not added (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+			} catch ( \Throwable $ignored ) {
+				unset( $ignored );
+			}
+		}
 	}
 
 	/**
-	 * Requests the void, at most once: the flag is saved before the request,
-	 * and a flag that cannot be saved means no request.
+	 * An AUTHORIZED transaction of an order whose status was changed since it
+	 * failed (for example revived by a payment update) is not voided: one
+	 * "ACTION REQUIRED" note, recorded so it is not repeated.
 	 *
 	 * @param \WC_Order $order          Order.
 	 * @param int       $transaction_id Transaction ID.
 	 * @param string    $reason         Reason code.
-	 * @return string RELEASED or RESERVED.
+	 * @return string RESERVED.
 	 */
-	private function void( \WC_Order $order, int $transaction_id, string $reason ): string {
-		$failure = '';
+	private function skipVoid( \WC_Order $order, int $transaction_id, string $reason ): string {
+		$status = preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $order->get_status() ) );
+		$this->log( sprintf( 'Order %d: transaction %d is AUTHORIZED, but the order is no longer failed (status %s); not voided.', $order->get_id(), $transaction_id, $status ), 'warning' );
+		$this->note(
+			$order,
+			sprintf(
+				/* translators: 1: wallee transaction ID, 2: reason code. */
+				__( 'ACTION REQUIRED: wallee transaction %1$d is AUTHORIZED (money reserved), but this order failed (%2$s) and its status was changed since, so it was not voided automatically. Check the order before shipping; void transaction %1$d in the wallee portal if it must not be delivered.', 'wallee-express-checkout' ),
+				$transaction_id,
+				$reason
+			)
+		);
 		try {
-			$order->update_meta_data( self::META_VOID, 'failed' );
+			$order->update_meta_data( self::META_VOID, 'skipped' );
 			$order->save();
 		} catch ( \Throwable $e ) {
-			$failure = 'flag not saved, ' . get_class( $e );
+			$this->log( sprintf( 'Order %d: void outcome not saved (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+		}
+
+		return self::RESERVED;
+	}
+
+	/**
+	 * Requests the void, at most once: an atomic claim is taken first, then
+	 * the flag is saved; a claim held elsewhere means no request and no note
+	 * (the other request reports), a claim or flag that cannot be stored means
+	 * no request and a manual void. A refused void is followed by one read of
+	 * the transaction: if it was completed meanwhile, a refund is needed.
+	 *
+	 * @param \WC_Order $order          Order.
+	 * @param int       $transaction_id Transaction ID.
+	 * @param string    $reason         Reason code.
+	 * @return string RELEASED, RESERVED or TAKEN.
+	 */
+	private function void( \WC_Order $order, int $transaction_id, string $reason ): string {
+		try {
+			$claimed = call_user_func( $this->claim, $order->get_id() );
+		} catch ( \Throwable $e ) {
+			$claimed = null;
+		}
+		if ( false === $claimed ) {
+			$this->log( sprintf( 'Order %d: void of transaction %d already claimed by another request; not sent again.', $order->get_id(), $transaction_id ) );
+
+			return self::RESERVED;
+		}
+
+		$failure = true === $claimed ? '' : 'claim not stored';
+		if ( '' === $failure ) {
+			try {
+				$order->update_meta_data( self::META_VOID, 'failed' );
+				$order->save();
+			} catch ( \Throwable $e ) {
+				$failure = 'flag not saved, ' . get_class( $e );
+			}
 		}
 
 		$void_state = '';
+		$sent       = false;
 		if ( '' === $failure ) {
+			$sent = true;
 			try {
 				$void       = $this->api->voidTransaction( $transaction_id );
 				$void_state = isset( $void['state'] ) && is_string( $void['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $void['state'] ) : '';
@@ -260,6 +360,12 @@ final class FailedOrderSettlement {
 
 		if ( '' !== $failure ) {
 			$this->log( sprintf( 'Order %d: void of transaction %d failed (%s).', $order->get_id(), $transaction_id, $failure ), 'error' );
+			$now = $sent ? $this->stateAfterRefusal( $order, $transaction_id ) : '';
+			if ( in_array( $now, self::STATES_TAKEN, true ) ) {
+				$this->noteRefund( $order, $transaction_id, $now, $reason );
+
+				return self::TAKEN;
+			}
 			$this->note(
 				$order,
 				sprintf(
@@ -291,6 +397,25 @@ final class FailedOrderSettlement {
 		);
 
 		return self::RELEASED;
+	}
+
+	/**
+	 * The transaction state after a refused void ('' if it cannot be read):
+	 * the transaction may have been completed in the meantime.
+	 *
+	 * @param \WC_Order $order          Order.
+	 * @param int       $transaction_id Transaction ID.
+	 */
+	private function stateAfterRefusal( \WC_Order $order, int $transaction_id ): string {
+		try {
+			$transaction = $this->api->getTransaction( $transaction_id );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Order %d: transaction %d not read after the refused void (%s).', $order->get_id(), $transaction_id, get_class( $e ) ), 'warning' );
+
+			return '';
+		}
+
+		return isset( $transaction['state'] ) && is_string( $transaction['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $transaction['state'] ) : '';
 	}
 
 	/**

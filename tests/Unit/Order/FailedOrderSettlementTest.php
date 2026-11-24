@@ -49,11 +49,25 @@ class FailedOrderSettlementTest extends TestCase {
 		parent::tearDown();
 	}
 
+	/** @var bool|null|\Throwable Answer of the void claim. */
+	private $claim = true;
+
+	/** @var int[] Order IDs the void claim was asked for. */
+	private $claims = array();
+
 	private function settlement(): FailedOrderSettlement {
 		return new FailedOrderSettlement(
 			$this->api,
 			function ( $message, $level = 'info' ) {
 				$this->logs[] = $level . ': ' . $message;
+			},
+			function ( int $order_id ) {
+				$this->claims[] = $order_id;
+				if ( $this->claim instanceof \Throwable ) {
+					throw $this->claim;
+				}
+
+				return $this->claim;
 			}
 		);
 	}
@@ -103,6 +117,91 @@ class FailedOrderSettlementTest extends TestCase {
 		$log = implode( "\n", $this->logs );
 		$this->assertStringContainsString( 'error: Order 501: void of transaction 629017977 failed (Wallee\ExpressCheckout\Api\ApiException).', $log );
 		$this->assertStringNotContainsString( 'HTTP 409', $log, 'class only' );
+	}
+
+	public function test_the_void_is_claimed_atomically_for_the_order_before_it_is_sent() {
+		$this->settlement()->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' );
+
+		$this->assertSame( array( 501 ), $this->claims );
+		$this->assertCount( 1, $this->voids() );
+	}
+
+	public function test_a_void_claimed_by_a_parallel_request_is_not_sent_again_and_adds_no_note() {
+		$this->claim = false;
+
+		$this->assertSame( FailedOrderSettlement::RESERVED, $this->settlement()->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertSame( array(), $this->voids() );
+		$this->assertSame( array(), $this->order->notes );
+		$this->assertStringContainsString( 'Order 501: void of transaction 629017977 already claimed by another request; not sent again.', implode( "\n", $this->logs ) );
+	}
+
+	/**
+	 * @dataProvider unusable_claims
+	 *
+	 * @param mixed $claim Claim answer.
+	 */
+	public function test_a_void_claim_that_cannot_be_stored_sends_no_void_and_asks_for_a_manual_void( $claim ) {
+		$this->claim = $claim;
+
+		$this->assertSame( FailedOrderSettlement::RESERVED, $this->settlement()->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertSame( array(), $this->voids() );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'Void transaction 629017977 manually in the wallee portal', $this->order->notes[0] );
+	}
+
+	public function unusable_claims(): array {
+		return array(
+			'database error' => array( null ),
+			'exception'      => array( new \RuntimeException( 'db' ) ),
+		);
+	}
+
+	public function test_an_authorization_of_an_order_that_is_no_longer_failed_is_not_voided() {
+		$this->order->status = 'processing';
+		$settlement          = $this->settlement();
+
+		$this->assertSame( FailedOrderSettlement::RESERVED, $settlement->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertSame( FailedOrderSettlement::RESERVED, $settlement->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ), 'repeated call' );
+
+		$this->assertSame( array(), $this->voids() );
+		$this->assertSame( array(), $this->claims );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringStartsWith( 'ACTION REQUIRED: wallee transaction 629017977 is AUTHORIZED (money reserved), but this order failed (coupon_invalid) and its status was changed since', $this->order->notes[0] );
+		$this->assertStringContainsString( 'not voided automatically', $this->order->notes[0] );
+	}
+
+	/**
+	 * @dataProvider taken_states
+	 *
+	 * @param string $state State after the refused void.
+	 */
+	public function test_a_void_refused_because_the_payment_was_taken_meanwhile_asks_for_a_refund( string $state ) {
+		$this->api->void        = new ApiException( 'refused', 409 );
+		$this->api->transaction = array(
+			'id'    => self::TRANSACTION,
+			'state' => $state,
+		);
+
+		$this->assertSame( FailedOrderSettlement::TAKEN, $this->settlement()->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertSame( array( 'voidTransaction', 'getTransaction' ), $this->api->methods() );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'A refund is needed', $this->order->notes[0] );
+		$this->assertStringNotContainsString( 'manually', $this->order->notes[0] );
+	}
+
+	public function taken_states(): array {
+		return array(
+			'completed' => array( 'COMPLETED' ),
+			'fulfill'   => array( 'FULFILL' ),
+		);
+	}
+
+	public function test_a_refused_void_whose_transaction_cannot_be_read_asks_for_a_manual_void() {
+		$this->api->void        = new ApiException( 'refused', 409 );
+		$this->api->transaction = new ApiException( 'down', 503 );
+
+		$this->assertSame( FailedOrderSettlement::RESERVED, $this->settlement()->settle( $this->order, self::TRANSACTION, 'AUTHORIZED' ) );
+		$this->assertStringContainsString( 'Void transaction 629017977 manually in the wallee portal', $this->order->notes[0] );
 	}
 
 	public function test_a_void_answered_with_state_failed_counts_as_failed() {
@@ -226,6 +325,20 @@ class FailedOrderSettlementTest extends TestCase {
 		$this->assertStringStartsWith( 'ACTION REQUIRED:', $this->order->notes[0] );
 		$this->assertStringContainsString( 'coupon_invalid', $this->order->notes[0] );
 		$this->assertStringContainsString( 'on-hold', $this->order->notes[0] );
+	}
+
+	public function test_a_revival_note_that_cannot_be_added_never_breaks_the_status_change() {
+		$order = new class( 501, 60.11 ) extends \WC_Order {
+			// phpcs:ignore Squiz.Commenting.FunctionComment.Missing
+			public function add_order_note( $note ) {
+				throw new \RuntimeException( 'db' );
+			}
+		};
+		FailedOrderSettlement::markFailed( $order, 'coupon_invalid' );
+
+		FailedOrderSettlement::noteRevival( 501, 'failed', 'processing', $order );
+
+		$this->addToAssertionCount( 1 );
 	}
 
 	public function test_other_status_changes_get_no_note() {

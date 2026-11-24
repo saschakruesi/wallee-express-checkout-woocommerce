@@ -21,6 +21,7 @@ use Wallee\ExpressCheckout\Tests\Support\FakeOrderService;
 use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
 use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Support\HoldingOrder;
+use Wallee\ExpressCheckout\Tests\Support\ThrowingMetaOrder;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
@@ -841,6 +842,26 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertNull( $handler->externalHost() );
 		$this->assertSame( array( 'buyer@example.test' ), $this->orders->coupon_checks );
 		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0] );
+	}
+
+	public function test_a_settlement_error_does_not_tell_an_unpaid_customer_that_the_payment_was_received() {
+		$this->orders->coupon_reason = 'coupon_invalid';
+		$this->orders->order_class   = ThrowingMetaOrder::class;
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'coupon_invalid' ), $this->orders->failed );
+		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0], 'same notice as without the error' );
+		$this->assertSame( array( 501 ), $this->scheduled, 'the background job settles the payment later' );
+		$this->assertStringContainsString( 'Return: order 501: payment of the failed order not settled (RuntimeException).', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_settlement_error_with_money_reserved_tells_the_customer_the_payment_was_received() {
+		$this->orders->coupon_reason     = 'coupon_invalid';
+		$this->orders->order_class       = ThrowingMetaOrder::class;
+		$this->api->transaction['state'] = 'AUTHORIZED';
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
 	}
 
 	public function test_a_coupon_failure_with_money_reserved_voids_the_authorization() {

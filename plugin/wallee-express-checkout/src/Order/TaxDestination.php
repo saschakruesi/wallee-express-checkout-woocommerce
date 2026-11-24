@@ -113,8 +113,8 @@ final class TaxDestination {
 
 	/**
 	 * Compares the address's tax rates with those of the snapshot's tax
-	 * location for every class in classes(). Rates are compared by rate ID,
-	 * percentage, compound and shipping flag.
+	 * location for every class in classes(). Rates are compared by
+	 * percentage, compound and shipping flag (not by rate ID).
 	 *
 	 * The address's state is wallee's free-text region; it is compared by its
 	 * WooCommerce state code (StateCode). A region that matches no state of
@@ -191,11 +191,12 @@ final class TaxDestination {
 
 	/**
 	 * WooCommerce's matching rates for a class and an address, reduced to
-	 * what decides the tax: ID, percentage, compound and shipping flag.
+	 * what decides the tax: percentage, compound and shipping flag. Rate IDs
+	 * are left out, so equal rates stored in separate rows count as equal.
 	 *
 	 * @param string $tax_class Class slug, '' for standard.
 	 * @param array  $address   Keys country, state, postcode, city.
-	 * @return array<string, string> Rate ID => `rate|compound|shipping`, sorted by ID.
+	 * @return string[] `rate|compound|shipping` per rate, sorted.
 	 */
 	private static function rates( string $tax_class, array $address ): array {
 		$found = \WC_Tax::find_rates(
@@ -209,10 +210,10 @@ final class TaxDestination {
 		);
 
 		$rates = array();
-		foreach ( is_array( $found ) ? $found : array() as $id => $rate ) {
+		foreach ( is_array( $found ) ? $found : array() as $rate ) {
 			$rate = is_array( $rate ) ? $rate : array();
 
-			$rates[ (string) $id ] = implode(
+			$rates[] = implode(
 				'|',
 				array(
 					isset( $rate['rate'] ) && is_numeric( $rate['rate'] ) ? (string) (float) $rate['rate'] : '',
@@ -221,7 +222,7 @@ final class TaxDestination {
 				)
 			);
 		}
-		ksort( $rates, SORT_STRING );
+		sort( $rates, SORT_STRING );
 
 		return $rates;
 	}

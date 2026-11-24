@@ -89,6 +89,34 @@ final class RateLimiter {
 	}
 
 	/**
+	 * Claims a name once, atomically: the counter table doubles as a store of
+	 * one-time claims (`INSERT IGNORE` on its primary key). Of two requests
+	 * claiming the same name at the same time, exactly one gets true. The
+	 * claim expires with its row (purgeExpired()).
+	 *
+	 * @param \wpdb  $db          Database.
+	 * @param string $name        Claim name (no personal data).
+	 * @param int    $ttl_seconds How long the claim is kept.
+	 * @return bool|null True if this call took the claim, false if it was taken before,
+	 *                   null if the database did not answer.
+	 */
+	public static function claimOnce( \wpdb $db, string $name, int $ttl_seconds ): ?bool {
+		$table  = self::tableName( $db );
+		$result = $db->query(
+			$db->prepare(
+				"INSERT IGNORE INTO {$table} (bucket, hits, expires_at) VALUES (%s, 1, %d)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is the prefix plus a constant.
+				md5( 'once|' . $name ),
+				time() + max( 1, $ttl_seconds )
+			)
+		);
+		if ( false === $result ) {
+			return null;
+		}
+
+		return (int) $result > 0;
+	}
+
+	/**
 	 * Counts one hit in the database.
 	 *
 	 * @param string $key            Bucket key (md5).

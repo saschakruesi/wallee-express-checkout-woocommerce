@@ -777,7 +777,8 @@ final class ReturnHandler {
 
 	/**
 	 * Marks an order failed for an owner-decided reason and settles its money.
-	 * Any error is logged; the paid-order notice is the fallback.
+	 * Any error is logged; the fallback is the paid-order notice when the
+	 * money is reserved or taken, else an open payment for the background job.
 	 *
 	 * @param \WC_Order $order          Order.
 	 * @param string    $reason         Reason code.
@@ -796,7 +797,9 @@ final class ReturnHandler {
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: order %d: payment of the failed order not settled (%s).', $order->get_id(), get_class( $e ) ), 'error' );
 
-			return FailedOrderSettlement::RESERVED;
+			// Only money already reserved or taken may be reported as received;
+			// an undecided payment is left to the background job.
+			return in_array( $state, self::MONEY_MOVED_STATES, true ) ? FailedOrderSettlement::RESERVED : FailedOrderSettlement::OPEN;
 		}
 	}
 
