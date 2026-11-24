@@ -95,6 +95,33 @@ class CouponHoldTest extends TestCase {
 		$this->assertSame( array(), \WC_Coupon_Data_Store_Stub::$holds );
 	}
 
+	public function test_held_keys_are_persisted_on_the_order() {
+		$order             = self::order();
+		$order->data_store = new class() {
+			/**
+			 * Stages the keys on the order, as WooCommerce's data store does (no save).
+			 *
+			 * @param \WC_Order $order    Order.
+			 * @param array     $held     Global hold keys.
+			 * @param array     $for_user Per-user hold keys.
+			 */
+			public function set_coupon_held_keys( $order, $held, $for_user ) {
+				$order->update_meta_data( '_coupon_held_keys_for_users', $for_user );
+			}
+		};
+
+		$this->assertSame( array( CouponHold::HELD, '' ), CouponHold::hold( array( 'save5' ), $order ) );
+		$this->assertSame( array( 7 => 'held_save5' ), $order->meta['_coupon_held_keys_for_users'] );
+		$this->assertSame( 1, $order->saves, 'the staged keys are saved' );
+	}
+
+	public function test_an_order_that_cannot_be_saved_is_a_technical_failure() {
+		$order             = self::order();
+		$order->save_error = new \RuntimeException( 'db' );
+
+		$this->assertSame( array( CouponHold::FAILED, 'keys not saved (RuntimeException)' ), CouponHold::hold( array( 'save5' ), $order ) );
+	}
+
 	public function test_keys_that_cannot_be_saved_are_a_technical_failure() {
 		$order             = self::order();
 		$order->data_store = new class() {

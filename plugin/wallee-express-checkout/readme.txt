@@ -149,6 +149,7 @@ Company site: https://wallee.com
 * Fix: product page purchases with attribute names containing non-ASCII characters work again.
 * Variation data is checked by the item meta name it becomes, and cart lines are checked against their product's variation attributes.
 * Coupons: WooCommerce's tentative coupon hold is taken for the order's own coupons when the customer returns, never for other coupons in the cart.
+* Fix: the coupon hold keys are saved with the order, so the tentative hold is released when the coupon use is recorded.
 * Coupon and destination checks skipped at return because the transaction could not be read run after payment and add an ACTION REQUIRED note on failure.
 * An error thrown by a third-party validation hook now hides the buttons instead of causing a server error.
 * Orders that fail for a missing e-mail, an invalid coupon or a changed destination: a reserved amount (AUTHORIZED) is voided automatically once; taken money gets an ACTION REQUIRED note that a refund is needed; a failed order revived by a later payment update gets an ACTION REQUIRED note.

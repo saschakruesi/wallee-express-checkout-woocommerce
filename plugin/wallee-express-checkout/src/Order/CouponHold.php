@@ -91,6 +91,9 @@ final class CouponHold {
 		if ( array() !== $held || array() !== $for_user ) {
 			try {
 				$order_store->set_coupon_held_keys( $order, $held, $for_user );
+				// The data store only stages the keys as order meta; unlike
+				// WooCommerce's checkout, nothing saves the order afterwards.
+				$order->save();
 			} catch ( \Throwable $e ) {
 				if ( self::LIMIT !== $outcome[0] ) {
 					$outcome = array( self::FAILED, 'keys not saved (' . get_class( $e ) . ')' );
