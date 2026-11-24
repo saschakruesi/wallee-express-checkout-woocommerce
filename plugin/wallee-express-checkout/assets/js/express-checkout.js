@@ -14,14 +14,29 @@
 	const context = config.context;
 	const containerId = 'wallee-ec-container-' + context;
 
-	// wallee sessions die after 30 minutes: renew well before that.
-	const SESSION_REFRESH_MS = 25 * 60 * 1000;
+	// wallee sessions die 30 minutes after creation. The server says when
+	// (expiresAt); the page renews 15 minutes before that, since a wallet flow
+	// was observed to take 11 minutes. Without a usable expiresAt it renews
+	// 15 minutes after load. The delay is kept between 1 and 15 minutes, so a
+	// wrong client clock cannot make it loop or wait too long.
+	const MINUTE_MS = 60 * 1000;
+	const REFRESH_LEAD_MS = 15 * MINUTE_MS;
+	const REFRESH_MAX_MS = 15 * MINUTE_MS;
+	const REFRESH_MIN_MS = MINUTE_MS;
 	const MAX_QUANTITY = 999;
+
+	// Message types the wallee widget posts to the page around its wallet
+	// overlay (docs/reference/spike-findings.md item 2; the handler script
+	// reads them from event.data.type and only trusts the widget's origin).
+	const OVERLAY_OPEN = 'wallee-express-checkout-overlay-open';
+	const OVERLAY_CLOSE = 'wallee-express-checkout-overlay-close';
 
 	let controller = null;
 	let sequence = 0;
 	let refreshTimer = null;
-	let loadedAt = 0;
+	let refreshAt = 0;
+	let refreshDue = false;
+	let overlayOpen = false;
 	let refresh = null;
 
 	function findRoot() {
@@ -53,7 +68,8 @@
 	function clearRefresh() {
 		window.clearTimeout( refreshTimer );
 		refreshTimer = null;
-		loadedAt = 0;
+		refreshAt = 0;
+		refreshDue = false;
 	}
 
 	function cancelPending() {
@@ -79,17 +95,63 @@
 		emptyContainer();
 	}
 
-	function scheduleRefresh() {
-		clearRefresh();
-		loadedAt = Date.now();
-		refreshTimer = window.setTimeout( function () {
-			if ( refresh ) {
-				refresh();
-			}
-		}, SESSION_REFRESH_MS );
+	/**
+	 * Milliseconds until the session should be renewed.
+	 *
+	 * @param {*} expiresAt ISO-8601 UTC expiry from the server, may be missing.
+	 * @return {number} Delay.
+	 */
+	function refreshDelay( expiresAt ) {
+		const expires = typeof expiresAt === 'string' ? Date.parse( expiresAt ) : NaN;
+		if ( ! isFinite( expires ) ) {
+			return REFRESH_MAX_MS;
+		}
+		return Math.min( REFRESH_MAX_MS, Math.max( REFRESH_MIN_MS, expires - REFRESH_LEAD_MS - Date.now() ) );
 	}
 
-	function render( token ) {
+	/**
+	 * Renews the session unless a wallet overlay is open; then it waits for
+	 * the overlay to close, so an open wallet sheet is never removed.
+	 */
+	function runRefresh() {
+		if ( overlayOpen ) {
+			refreshDue = true;
+			return;
+		}
+		if ( refresh ) {
+			refresh();
+		}
+	}
+
+	function scheduleRefresh( expiresAt ) {
+		clearRefresh();
+		const delay = refreshDelay( expiresAt );
+		refreshAt = Date.now() + delay;
+		refreshTimer = window.setTimeout( runRefresh, delay );
+	}
+
+	/**
+	 * Reads an overlay message of the wallee widget. Adjust here if wallee
+	 * changes the message format.
+	 *
+	 * @param {MessageEvent} event Message.
+	 * @return {?boolean} True for "opened", false for "closed", null for anything else.
+	 */
+	function overlayChange( event ) {
+		if ( ! config.origin || ! event || event.origin !== config.origin ) {
+			return null;
+		}
+		const type = event.data && typeof event.data.type === 'string' ? event.data.type : '';
+		if ( type === OVERLAY_OPEN ) {
+			return true;
+		}
+		if ( type === OVERLAY_CLOSE ) {
+			return false;
+		}
+		return null;
+	}
+
+	function render( token, expiresAt ) {
 		const handler = window.ExpressCheckoutHandler;
 		if ( ! handler || typeof handler.load !== 'function' ) {
 			showError();
@@ -110,7 +172,7 @@
 		}
 		try {
 			Promise.resolve( handler.load( containerId, token, options ) ).catch( showError );
-			scheduleRefresh();
+			scheduleRefresh( expiresAt );
 		} catch ( e ) {
 			showError();
 		}
@@ -149,7 +211,7 @@
 				return;
 			}
 			if ( data && typeof data.sessionToken === 'string' && data.sessionToken !== '' ) {
-				render( data.sessionToken );
+				render( data.sessionToken, data.expiresAt );
 			} else {
 				showError();
 			}
@@ -344,9 +406,21 @@
 	}
 
 	function init() {
+		// Timers are throttled in background tabs: catch up when visible again.
 		document.addEventListener( 'visibilitychange', function () {
-			if ( document.visibilityState === 'visible' && loadedAt && refresh && Date.now() - loadedAt > SESSION_REFRESH_MS ) {
-				refresh();
+			if ( document.visibilityState === 'visible' && refreshAt && Date.now() >= refreshAt ) {
+				runRefresh();
+			}
+		} );
+		window.addEventListener( 'message', function ( event ) {
+			const open = overlayChange( event );
+			if ( open === null ) {
+				return;
+			}
+			overlayOpen = open;
+			if ( ! open && refreshDue ) {
+				refreshDue = false;
+				runRefresh();
 			}
 		} );
 		whenRootExists( function () {

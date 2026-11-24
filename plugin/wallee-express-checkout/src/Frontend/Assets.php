@@ -173,11 +173,32 @@ final class Assets {
 			'restNonce'  => wp_create_nonce( 'wp_rest' ),
 			'maxColumns' => $settings->maxColumns(),
 			'context'    => $context,
+			// Overlay messages are only trusted from wallee's origin.
+			'origin'     => self::origin( Plugin::adapter()->baseUrl() ),
 		);
 		if ( null !== $settings->maxRows() ) {
 			$data['maxRows'] = $settings->maxRows();
 		}
 		wp_localize_script( self::HANDLE, 'walleeEc', $data );
+	}
+
+	/**
+	 * Origin (`scheme://host[:port]`) of a URL, as browsers report it in
+	 * `MessageEvent.origin`; empty when the URL has no scheme or host.
+	 *
+	 * @param string $url URL.
+	 * @return string
+	 */
+	public static function origin( string $url ): string {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
+			return '';
+		}
+		$scheme  = strtolower( $parts['scheme'] );
+		$default = 'https' === $scheme ? 443 : ( 'http' === $scheme ? 80 : 0 );
+		$port    = isset( $parts['port'] ) && (int) $parts['port'] !== $default ? ':' . (int) $parts['port'] : '';
+
+		return $scheme . '://' . strtolower( $parts['host'] ) . $port;
 	}
 
 	/**

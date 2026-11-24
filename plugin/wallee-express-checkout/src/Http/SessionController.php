@@ -31,10 +31,15 @@ final class SessionController {
 	const NONCE_ACTION   = 'wallee_ec_session';
 	const NONCE_HEADER   = 'X-Wallee-Ec-Nonce';
 	const SESSION_KEY    = 'wallee_ec_session';
-	const REUSE_SECONDS  = 900;
+	const REUSE_SECONDS  = 300;
 	const RATE_MAX       = 20;
 	const RATE_WINDOW    = 60;
 	const GLOBAL_MAX     = 300;
+
+	/**
+	 * A wallee session times out 30 minutes after creation (spike finding 6).
+	 */
+	const LIFETIME_SECONDS = 1800;
 
 	const MAX_QUANTITY        = 999;
 	const MAX_VARIATIONS      = 20;
@@ -239,7 +244,7 @@ final class SessionController {
 
 		$reused = $this->reusable( $context, $hash );
 		if ( null !== $reused ) {
-			return new \WP_REST_Response( array( 'sessionToken' => $reused ), 200 );
+			return new \WP_REST_Response( $reused, 200 );
 		}
 
 		$service = new SessionService(
@@ -262,7 +267,43 @@ final class SessionController {
 
 		$this->remember( $context, $hash, $result );
 
-		return new \WP_REST_Response( array( 'sessionToken' => $result['sessionToken'] ), 200 );
+		$record = $this->repository->findByUuid( $result['uuid'] );
+
+		return new \WP_REST_Response( self::tokenResponse( $result['sessionToken'], null === $record ? gmdate( 'Y-m-d H:i:s' ) : $record->createdAt() ), 200 );
+	}
+
+	/**
+	 * Response body for a token: the token and when its wallee session
+	 * expires, so the page can renew it in time.
+	 *
+	 * @param string $token      Session token.
+	 * @param string $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
+	 * @return array{sessionToken: string, expiresAt?: string}
+	 */
+	public static function tokenResponse( string $token, string $created_at ): array {
+		$body    = array( 'sessionToken' => $token );
+		$expires = self::expiresAt( $created_at );
+		if ( null !== $expires ) {
+			$body['expiresAt'] = $expires;
+		}
+
+		return $body;
+	}
+
+	/**
+	 * Expiry of a wallee session as an ISO-8601 UTC string: row creation plus
+	 * 30 minutes.
+	 *
+	 * @param string $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
+	 * @return string|null Null when the time cannot be read.
+	 */
+	public static function expiresAt( string $created_at ): ?string {
+		$created = \DateTimeImmutable::createFromFormat( '!Y-m-d H:i:s', $created_at, new \DateTimeZone( 'UTC' ) );
+		if ( false === $created ) {
+			return null;
+		}
+
+		return gmdate( 'Y-m-d\TH:i:s\Z', $created->getTimestamp() + self::LIFETIME_SECONDS );
 	}
 
 	/**
@@ -292,9 +333,9 @@ final class SessionController {
 	 *
 	 * @param string $context Context.
 	 * @param string $hash    Snapshot hash.
-	 * @return string|null
+	 * @return array|null Response body, see tokenResponse().
 	 */
-	private function reusable( string $context, string $hash ): ?string {
+	private function reusable( string $context, string $hash ): ?array {
 		if ( ! WC()->session ) {
 			return null;
 		}
@@ -302,25 +343,26 @@ final class SessionController {
 		if ( null === $entry || '' === $entry ) {
 			return null;
 		}
-		$token = $this->reusableToken( $entry, $context, $hash );
-		if ( null === $token ) {
+		$reused = $this->reusableSession( $entry, $context, $hash );
+		if ( null === $reused ) {
 			self::forget();
 		}
 
-		return $token;
+		return $reused;
 	}
 
 	/**
-	 * The token of a remembered entry when it may still be used: same
-	 * context and content, younger than 15 minutes, and its stored session
-	 * has not been used yet.
+	 * The response for a remembered entry when it may still be used: same
+	 * context and content, younger than 5 minutes (so at least 25 of wallee's
+	 * 30 minutes are left), and its stored session has not been used yet.
+	 * The expiry comes from the stored row.
 	 *
 	 * @param mixed  $entry   Remembered entry.
 	 * @param string $context Context.
 	 * @param string $hash    Snapshot hash.
-	 * @return string|null
+	 * @return array|null Response body, see tokenResponse().
 	 */
-	public function reusableToken( $entry, string $context, string $hash ): ?string {
+	public function reusableSession( $entry, string $context, string $hash ): ?array {
 		if ( ! is_array( $entry ) || ! isset( $entry['context'], $entry['hash'], $entry['token'], $entry['uuid'], $entry['created'] ) ) {
 			return null;
 		}
@@ -335,7 +377,7 @@ final class SessionController {
 			return null;
 		}
 
-		return $entry['token'];
+		return self::tokenResponse( $entry['token'], $record->createdAt() );
 	}
 
 	/**

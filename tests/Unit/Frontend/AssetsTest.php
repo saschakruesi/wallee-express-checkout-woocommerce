@@ -113,6 +113,16 @@ class AssetsTest extends TestCase {
 		$this->assertStringNotContainsString( 'wallee-ec-terms', Assets::containerHtml( 'cart', 9 ) );
 	}
 
+	public function test_origin_of_the_wallee_base_url() {
+		Functions\when( 'wp_parse_url' )->alias( 'parse_url' );
+
+		$this->assertSame( 'https://app-wallee.com', Assets::origin( 'https://app-wallee.com/' ) );
+		$this->assertSame( 'https://app-wallee.com', Assets::origin( 'HTTPS://App-Wallee.com:443/api' ) );
+		$this->assertSame( 'https://staging.example.test:8443', Assets::origin( 'https://staging.example.test:8443/' ) );
+		$this->assertSame( '', Assets::origin( '/relative' ) );
+		$this->assertSame( '', Assets::origin( '' ) );
+	}
+
 	public function test_claim_is_true_once_until_reset() {
 		Assets::resetEmitted();
 		$this->assertTrue( Assets::claim( 'cart' ) );

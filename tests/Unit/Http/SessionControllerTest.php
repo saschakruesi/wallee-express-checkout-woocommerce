@@ -226,22 +226,54 @@ class SessionControllerTest extends TestCase {
 	public function test_reuse_returns_token_for_same_content_with_created_row() {
 		$this->stored_row( 'created' );
 
-		$this->assertSame( 'tok', $this->controller->reusableToken( $this->entry(), 'cart', 'h1' ) );
+		$this->assertSame(
+			array(
+				'sessionToken' => 'tok',
+				'expiresAt'    => '2026-11-24T10:30:00Z',
+			),
+			$this->controller->reusableSession( $this->entry(), 'cart', 'h1' ),
+			'the expiry comes from the row, not from the reuse'
+		);
+	}
+
+	public function test_reuse_window_is_five_minutes() {
+		$this->stored_row( 'created' );
+
+		$this->assertNotNull( $this->controller->reusableSession( $this->entry( array( 'created' => time() - 290 ) ), 'cart', 'h1' ) );
+		$this->assertNull( $this->controller->reusableSession( $this->entry( array( 'created' => time() - 300 ) ), 'cart', 'h1' ) );
+	}
+
+	public function test_expires_at_is_creation_plus_thirty_minutes_in_utc() {
+		$this->assertSame( '2026-11-24T10:30:00Z', SessionController::expiresAt( '2026-11-24 10:00:00' ) );
+		$this->assertSame( '2026-11-25T00:15:59Z', SessionController::expiresAt( '2026-11-24 23:45:59' ) );
+		$this->assertNull( SessionController::expiresAt( '' ) );
+		$this->assertNull( SessionController::expiresAt( 'garbage' ) );
+	}
+
+	public function test_token_response_omits_an_unknown_expiry() {
+		$this->assertSame(
+			array(
+				'sessionToken' => 't',
+				'expiresAt'    => '2026-11-24T10:30:00Z',
+			),
+			SessionController::tokenResponse( 't', '2026-11-24 10:00:00' )
+		);
+		$this->assertSame( array( 'sessionToken' => 't' ), SessionController::tokenResponse( 't', 'nope' ) );
 	}
 
 	public function test_reuse_refuses_changed_hash_context_age_and_used_row() {
 		$this->stored_row( 'created' );
-		$this->assertNull( $this->controller->reusableToken( $this->entry(), 'cart', 'h2' ), 'hash' );
-		$this->assertNull( $this->controller->reusableToken( $this->entry(), 'product', 'h1' ), 'context' );
-		$this->assertNull( $this->controller->reusableToken( $this->entry( array( 'created' => time() - 901 ) ), 'cart', 'h1' ), 'expired' );
-		$this->assertNull( $this->controller->reusableToken( $this->entry( array( 'token' => '' ) ), 'cart', 'h1' ), 'empty token' );
-		$this->assertNull( $this->controller->reusableToken( array( 'context' => 'cart' ), 'cart', 'h1' ), 'incomplete' );
-		$this->assertNull( $this->controller->reusableToken( null, 'cart', 'h1' ), 'no entry' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry(), 'cart', 'h2' ), 'hash' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry(), 'product', 'h1' ), 'context' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry( array( 'created' => time() - 301 ) ), 'cart', 'h1' ), 'expired' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry( array( 'token' => '' ) ), 'cart', 'h1' ), 'empty token' );
+		$this->assertNull( $this->controller->reusableSession( array( 'context' => 'cart' ), 'cart', 'h1' ), 'incomplete' );
+		$this->assertNull( $this->controller->reusableSession( null, 'cart', 'h1' ), 'no entry' );
 
 		$this->stored_row( 'ordering' );
-		$this->assertNull( $this->controller->reusableToken( $this->entry(), 'cart', 'h1' ), 'row used' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry(), 'cart', 'h1' ), 'row used' );
 
 		$this->db->next_row = null;
-		$this->assertNull( $this->controller->reusableToken( $this->entry(), 'cart', 'h1' ), 'row missing' );
+		$this->assertNull( $this->controller->reusableSession( $this->entry(), 'cart', 'h1' ), 'row missing' );
 	}
 }
