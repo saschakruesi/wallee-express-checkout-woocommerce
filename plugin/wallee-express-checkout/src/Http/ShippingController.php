@@ -101,7 +101,7 @@ final class ShippingController {
 					new SessionRepository( $wpdb ),
 					UrlSigner::fromWordPress(),
 					new ShippingOptionsProvider(),
-					new RateLimiter(),
+					new RateLimiter( $wpdb ),
 					array( Plugin::adapter(), 'log' )
 				);
 				$controller->registerRoute();

@@ -7,6 +7,8 @@
 
 namespace Wallee\ExpressCheckout\Session;
 
+use Wallee\ExpressCheckout\Security\RateLimiter;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -14,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	const DB_VERSION     = '2';
+	const DB_VERSION     = '3';
 	const DB_VERSION_KEY = 'wallee_ec_db_version';
 	const CRON_HOOK      = 'wallee_ec_cleanup';
 	const RETENTION_DAYS = 7;
@@ -30,7 +32,8 @@ final class Installer {
 	}
 
 	/**
-	 * Creates the table and schedules the daily cleanup. Activation hook.
+	 * Creates the session table and the rate-limit counter table, schedules
+	 * the daily cleanup. Activation hook.
 	 */
 	public static function install(): void {
 		global $wpdb;
@@ -38,6 +41,7 @@ final class Installer {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
 		$table   = SessionRepository::tableName( $wpdb );
+		$rate    = RateLimiter::tableName( $wpdb );
 		$charset = $wpdb->get_charset_collate();
 
 		dbDelta(
@@ -62,6 +66,16 @@ final class Installer {
 ) {$charset};"
 		);
 
+		dbDelta(
+			"CREATE TABLE {$rate} (
+	bucket char(32) NOT NULL,
+	hits int(10) unsigned NOT NULL DEFAULT 0,
+	expires_at bigint(20) unsigned NOT NULL,
+	PRIMARY KEY  (bucket),
+	KEY expires_at (expires_at)
+) {$charset};"
+		);
+
 		update_option( self::DB_VERSION_KEY, self::DB_VERSION );
 
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
@@ -79,10 +93,12 @@ final class Installer {
 	}
 
 	/**
-	 * Cron handler: purges sessions older than the retention period.
+	 * Cron handler: purges sessions older than the retention period and
+	 * rate-limit counters whose window is over.
 	 */
 	public static function cleanup(): void {
 		global $wpdb;
 		( new SessionRepository( $wpdb ) )->purgeOlderThan( self::RETENTION_DAYS );
+		RateLimiter::purgeExpired( $wpdb );
 	}
 }

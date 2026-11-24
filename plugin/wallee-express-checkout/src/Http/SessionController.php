@@ -79,7 +79,7 @@ final class SessionController {
 			'rest_api_init',
 			static function () {
 				global $wpdb;
-				( new self( new RateLimiter(), new SessionRepository( $wpdb ) ) )->registerRoute();
+				( new self( new RateLimiter( $wpdb ), new SessionRepository( $wpdb ) ) )->registerRoute();
 			}
 		);
 		add_filter( 'rest_post_dispatch', array( self::class, 'noCache' ), 10, 3 );
