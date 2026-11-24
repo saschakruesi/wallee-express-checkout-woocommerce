@@ -5,6 +5,8 @@
 
 Wallet buttons on the cart page and on product pages of a WooCommerce shop. The customer pays with Apple Pay, PayPal or another wallet configured in wallee, and the order is created directly from the address and e-mail the wallet provides. No checkout form.
 
+This is an independent, privately developed project by Sascha Krüsi. It is not an official wallee product and is not supported by wallee AG.
+
 The add-on works on top of the [wallee plugin for WooCommerce](https://wordpress.org/plugins/woo-wallee/). It has no credentials of its own: it uses the space and application user configured there, and refunds, completions, voids and status updates keep running through the wallee plugin.
 
 ## Features
@@ -114,7 +116,7 @@ The add-on sends cart line items, amounts and the currency to wallee's API and l
 
 ## Security
 
-Please report vulnerabilities privately to the repository owner rather than in a public issue. Version 0.1.0 has known weaknesses that 1.0.0 fixes; do not use 0.1.0.
+Please report vulnerabilities privately to the repository owner ([@saschakruesi](https://github.com/saschakruesi)) rather than in a public issue. Version 0.1.0 has known weaknesses that 1.0.0 fixes; do not use 0.1.0.
 
 ## Documentation
 

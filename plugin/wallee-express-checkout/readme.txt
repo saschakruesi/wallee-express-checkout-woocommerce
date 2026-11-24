@@ -1,11 +1,11 @@
 === wallee Express Checkout ===
-Contributors: wallee
+Contributors: saschakruesi
 Tags: woocommerce, wallee, express checkout, apple pay, paypal
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
 Requires Plugins: woocommerce, woo-wallee
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: Apache-2.0
 License URI: http://www.apache.org/licenses/LICENSE-2.0
 
@@ -140,6 +140,9 @@ wallee privacy policy: https://en.wallee.com/legal/privacy-policy
 Company site: https://wallee.com
 
 == Changelog ==
+
+= 1.0.2 =
+* Author and contributor information corrected. No functional change.
 
 = 1.0.1 =
 * A cart in which nothing needs shipping whose customer's address is taxed differently is no longer failed after payment; the order is kept at the offered price with an ACTION REQUIRED tax note.

@@ -1,13 +1,13 @@
 <?php
 /**
  * Plugin Name:       wallee Express Checkout
- * Plugin URI:        https://wallee.com
+ * Plugin URI:        https://github.com/saschakruesi/wallee-express-checkout-woocommerce
  * Description:       Express checkout buttons (Apple Pay, PayPal) for WooCommerce, powered by wallee.
- * Version:           1.0.1
+ * Version:           1.0.2
  * Requires at least: 6.0
  * Requires PHP:      7.4
- * Author:            wallee AG
- * Author URI:        https://www.wallee.com
+ * Author:            Sascha Krüsi
+ * Author URI:        https://github.com/saschakruesi
  * Requires Plugins:  woocommerce, woo-wallee
  * WC requires at least: 8.0
  * WC tested up to:   11.0.1
@@ -20,7 +20,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WALLEE_EC_VERSION', '1.0.1' );
+define( 'WALLEE_EC_VERSION', '1.0.2' );
 define( 'WALLEE_EC_FILE', __FILE__ );
 define( 'WALLEE_EC_PATH', plugin_dir_path( __FILE__ ) );
 
