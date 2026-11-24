@@ -53,8 +53,11 @@ ensure_security_group() {
       --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=$PFX-web},{$TAGS_KV}]" \
       --query GroupId --output text)"
   fi
-  aws ec2 authorize-security-group-ingress --group-id "$sg" \
-    --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,PrefixListIds=[{PrefixListId=$pl,Description=CloudFront}]" >/dev/null 2>&1 || true
+  local err
+  if ! err="$(aws ec2 authorize-security-group-ingress --group-id "$sg" \
+    --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,PrefixListIds=[{PrefixListId=$pl,Description=CloudFront}]" 2>&1)"; then
+    case "$err" in *InvalidPermission.Duplicate*) ;; *) echo "$err" >&2; exit 1 ;; esac
+  fi
   state_set vpc_id "$vpc"
   state_set security_group_id "$sg"
 }

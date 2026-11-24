@@ -9,12 +9,20 @@ get() { aws ssm get-parameter --name "/wallee-express-checkout/$1" --with-decryp
 umask 077
 mkdir -p /opt/wallee-ec
 tmp="$(mktemp /opt/wallee-ec/.env.XXXXXX)"
+# Read every value first so a failed or empty SSM read aborts before .env is touched.
+db_password="$(get db-password)"
+db_root_password="$(get db-root-password)"
+origin_secret="$(get origin-secret)"
+wp_admin_password="$(get wp-admin-password)"
+for v in "$db_password" "$db_root_password" "$origin_secret" "$wp_admin_password"; do
+  [ -n "$v" ] && [ "$v" != "None" ] || { rm -f "$tmp"; echo "empty parameter value, .env left unchanged" >&2; exit 1; }
+done
 {
   echo "SHOP_URL=$shop_url"
-  echo "DB_PASSWORD=$(get db-password)"
-  echo "DB_ROOT_PASSWORD=$(get db-root-password)"
-  echo "ORIGIN_SECRET=$(get origin-secret)"
-  echo "WP_ADMIN_PASSWORD=$(get wp-admin-password)"
+  echo "DB_PASSWORD=$db_password"
+  echo "DB_ROOT_PASSWORD=$db_root_password"
+  echo "ORIGIN_SECRET=$origin_secret"
+  echo "WP_ADMIN_PASSWORD=$wp_admin_password"
 } > "$tmp"
 mv "$tmp" /opt/wallee-ec/.env
 chmod 600 /opt/wallee-ec/.env
