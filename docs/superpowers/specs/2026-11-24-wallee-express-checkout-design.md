@@ -1,12 +1,13 @@
 # wallee Express Checkout for WooCommerce: Design
 
 Date: 2026-11-24
-Status: draft, awaiting approval
+Status: approved by the owner on 2026-11-24 with the amendments marked "owner decision"
 
 ## 1. Intent
 
 Build a working prototype of a WooCommerce add-on plugin that offers wallee
-Express Checkout (Apple Pay, PayPal, later Google Pay) on the cart page. The
+Express Checkout (Apple Pay, PayPal, later Google Pay) on the cart page and on
+product pages, each switchable separately. The
 customer approves the payment in the wallet, the wallet supplies the addresses,
 and the shop order is created directly from that, without the customer going
 through the WooCommerce checkout form.
@@ -22,8 +23,11 @@ Goals
 
 - A separate plugin that needs no credentials of its own. It uses the space ID,
   application user ID and key already configured in the wallee main plugin.
-- Wallet buttons rendered by wallee's widget on the cart page, in both the
-  classic (shortcode) cart and the block cart.
+- Wallet buttons rendered by wallee's widget on the cart page (classic
+  shortcode cart and block cart) and on the single product page. Two separate
+  settings decide where they appear (owner decision).
+- A "Configure" action in the add-on's settings that sets up what Express
+  Checkout needs in the space through the main plugin (owner decision).
 - Shipping options offered inside the wallet come from WooCommerce shipping
   zones for the address the customer picked in the wallet.
 - After wallet approval the order is created from the session data and paid.
@@ -36,7 +40,11 @@ Goals
 
 Non-goals (for this prototype)
 
-- Buttons on product pages, mini cart or checkout page.
+- Buttons in the mini cart or on the checkout page.
+- Apple Pay end-to-end testing. The focus is Bogus Pay and PayPal (owner
+  decision). The widget renders all wallets in wallee's iframe, so the
+  integration is the same for every wallet. The verification file route is
+  still built because it is small.
 - Subscriptions, multi-currency plugins, pre-orders, split shipping packages.
 - Own webhook handling, own transaction storage, own refund logic.
 - Any change to the main plugin's files.
@@ -194,7 +202,9 @@ Source: https://app-wallee.com/doc/payment/apple-pay#apple-pay-express-checkout
   Route 53 zone. The new project must not share resources with it.
 - GitHub CLI is authenticated as the repository owner. Docker is installed
   locally.
-- A wallee test space with Express Checkout enabled exists.
+- A wallee test space with Express Checkout enabled exists. Bogus Pay and
+  Apple Pay are set up in it. PayPal must be added by the owner before the
+  PayPal pass.
 
 ## 4. Approaches
 
@@ -232,7 +242,7 @@ plugin/wallee-express-checkout/   the WordPress plugin (this folder is what gets
   assets/css/
   uninstall.php
 tests/                            PHPUnit unit tests
-infra/                            Docker Compose, Caddy config, provisioning and deploy scripts
+infra/                            Docker Compose, AWS provisioning and deploy scripts
 docs/                             this design, the plan, API reference excerpts
 ```
 
@@ -258,7 +268,9 @@ Each has one job and can be tested on its own.
 | `OrderFactory` | Snapshot plus final session data to a `WC_Order`. |
 | `ReturnHandler` | The redirect target after wallet approval: verify, create order, check amounts, process, redirect. |
 | `ResultHandler` | Targets of `successUrl` and `failureUrl`. |
-| `CartButtons` | Outputs the container and enqueues the script on the cart page (classic and block). |
+| `CartButtons` | Outputs the container and enqueues the script on the cart page (classic and block), if enabled. |
+| `ProductButtons` | Same on the single product page, if enabled. |
+| `SetupService` | The "Configure" action: checks credentials, installs webhooks and syncs payment methods through the main plugin. |
 | `DomainAssociation` | Serves the Apple Pay verification file. |
 | `Settings` | WooCommerce settings section. |
 | `Cleanup` | Daily purge of old session rows. |
@@ -287,14 +299,30 @@ the "proceed to checkout" button. For the block cart it appends the container
 to the rendered proceed-to-checkout block through a `render_block` filter, so
 no JavaScript build is needed.
 
-**Session creation.** The add-on's script calls `POST /wp-json/wallee-ec/v1/session`
+**Product page.** `ProductButtons` prints the container after the add-to-cart
+button. The session is created for exactly the product being viewed, in the
+chosen variation and quantity, and ignores whatever is already in the cart
+(author's call: "buy this now", the usual express behaviour; the existing cart
+is left untouched and is not emptied after the purchase). The script requests
+a session once the product is purchasable as configured: immediately for a
+simple product, after a complete variation is chosen for a variable product.
+It requests a new one when variation or quantity changes. No buttons for
+grouped and external products. Everything after session creation (shipping
+callback, return, order, result) is identical to the cart flow, because it
+works from the snapshot and not from the live cart.
+
+**Session creation.** The request body states the context: `cart`, or
+`product` with product ID, variation ID, variation attributes and quantity.
+For `product`, the server builds the snapshot by pricing that single line the
+way WooCommerce would in a cart (a temporary cart object, not the customer's
+cart). The add-on's script calls `POST /wp-json/wallee-ec/v1/session`
 (Store nonce plus the customer's WooCommerce session cookie). `SessionService`:
 
 1. Rejects an empty cart, a currency or cart type the add-on does not support
    (see 5.7), and a missing main plugin configuration. In those cases the
    buttons are simply not shown.
-2. If the customer session already holds a token for the current cart hash,
-   returns it.
+2. If the customer session already holds a token for the same context and
+   content hash, returns it.
 3. Otherwise builds the snapshot and line items, generates `session_uuid`,
    calls session create with `merchantRedirectUrl` and
    `merchantShippingCallbackUrl` (only if something needs shipping), stores
@@ -363,7 +391,8 @@ If process fails with an error, the order is set to `failed` and the customer
 returns to the cart with a notice. Because `merchantReference` is idempotent
 and the row is claimed exactly once, a browser reload cannot charge twice.
 
-**Result.** Success: make sure the link from 5.5 exists, empty the cart, set
+**Result.** Success: make sure the link from 5.5 exists, empty the cart (cart
+context only), set
 row state `completed`, redirect to the order-received page. The order status
 itself is not touched; the main plugin's webhook does that. Failure: set the
 order to `failed` if it is still `pending`, row state `failed`, redirect to
@@ -387,7 +416,8 @@ process is to be established by the spike. Rules for the builder (author's
 call):
 
 - The gateway is always resolved from the transaction itself, never guessed
-  from the wallet type: transaction, its payment connector configuration, that
+  from the wallet type (confirmed by the owner: read the transaction, for
+  example when its webhook arrives, and take the payment method from there): transaction, its payment connector configuration, that
   one's payment method configuration ID,
   `WC_Wallee_Entity_Method_Configuration::load_by_configuration()`, local ID,
   `wallee_<local id>`. If the configuration is not in the local table, trigger
@@ -412,7 +442,17 @@ call):
 WooCommerce > Settings > Payments area, own section "wallee Express Checkout",
 capability `manage_woocommerce`:
 
-- Enabled (default off).
+- Show buttons on the cart page (default off).
+- Show buttons on product pages (default off). The two are independent
+  (owner decision).
+- "Configure" button (owner decision). It runs `SetupService`: confirms the
+  main plugin's credentials work against the space, makes sure the main
+  plugin's webhook listeners exist (its own install routine, the one that runs
+  when its credentials are saved), synchronises the payment method
+  configurations, and reports the result. The add-on needs no webhook
+  listeners of its own at this point, since the Transaction listener of the
+  main plugin covers it. If the spike shows another listener is needed, it is
+  created here through wallee's webhook API.
 - Environment: Test or Production (default Test). Maps to
   `authorizationEnvironment`.
 - Buttons per row and maximum rows.
@@ -476,26 +516,40 @@ If nothing is stored it does nothing. The staging web server must hand
 
 ## 6. Staging environment on AWS
 
-- One Lightsail instance in `eu-north-1` (smallest size that runs WordPress
-  comfortably), Ubuntu LTS, a static IP, firewall open for 80 and 443 and SSH
-  only. All resources tagged `project=wallee-express-checkout`.
-- Docker Compose with three services: Caddy (automatic HTTPS), WordPress
-  (official PHP/Apache image), MariaDB. WP-CLI available for setup.
-- Host name: an IP-based wildcard DNS name (`<ip>.sslip.io`) to start with. A
-  real subdomain replaces it before Apple Pay is tested, since the Apple
-  registration is tied to the host name.
-- The plugin folder from the repository is mounted into
-  `wp-content/plugins/`. Deploy is `git pull` on the instance through a
-  script, using a read-only deploy key.
-- Provisioning script installs WordPress, WooCommerce, the wallee main plugin
-  (current release from GitHub), sample products, a shipping zone with a flat
-  rate and a free-shipping method, and tax rates.
+Everything runs in Docker on one instance. The owner asked for a free host name
+provided by AWS instead of an own subdomain, so the shop is published through
+CloudFront (owner decision, author's solution).
+
+- One EC2 instance in `eu-north-1` (small ARM type, Ubuntu LTS, 20 GB disk)
+  with an Elastic IP, in its own security group. All resources tagged
+  `project=wallee-express-checkout`. Nothing is shared with `merchant360`.
+- A CloudFront distribution in front of it. Its default domain
+  (`<id>.cloudfront.net`) is the shop's public HTTPS address: stable, free,
+  with an AWS-managed certificate. Caching is disabled, and all headers,
+  cookies and query strings are passed through, so it behaves as a plain
+  HTTPS front door.
+- The instance accepts HTTP only from CloudFront (security group limited to
+  the CloudFront origin-facing prefix list, plus a secret origin header
+  checked by the web server). No SSH port: shell access through AWS Systems
+  Manager Session Manager.
+- Docker Compose with two services: WordPress (official PHP/Apache image) and
+  MariaDB, plus WP-CLI as a one-off tool container. WordPress is configured
+  for the CloudFront address (`WP_HOME`, `WP_SITEURL`, HTTPS detection from
+  the forwarded protocol header).
+- A provisioning script run with WP-CLI installs WordPress, WooCommerce, the
+  wallee main plugin v3.4.11 from its GitHub release, sample products (simple,
+  variable, virtual), a shipping zone with a flat rate and a free-shipping
+  method, and tax rates.
+- The add-on's folder from the repository is mounted into
+  `wp-content/plugins/`, so it is developed inside the running shop. Deploy is
+  `git pull` on the instance through a script, using a read-only deploy key.
 - Secrets live in an `.env` file on the instance only. The wallee application
   user key is entered by the owner in the WordPress admin, never passed
-  through the repository or chat.
-- A basic-auth or IP restriction is not placed in front of the shop, because
-  wallee and Apple must reach it. The WordPress admin gets a strong generated
-  password.
+  through the repository or chat. The WordPress admin gets a strong generated
+  password, handed to the owner outside the repository.
+- For Apple Pay later: the CloudFront host name can be tried for Apple's
+  domain registration. If Apple or wallee refuse it, an own subdomain is
+  pointed at the same distribution. Not part of this prototype's test scope.
 
 ## 7. Spike first
 
@@ -552,9 +606,11 @@ documentation leaves open. Results are written to
 - End-to-end on staging by hand with Bogus Pay, following a written checklist:
   shippable cart, virtual cart, coupon, logged-in and guest, address without
   shipping method, failed payment, reload of the return URL, refund and
-  completion from the admin.
-- PayPal and Apple Pay end-to-end once Bogus Pay passes. Apple Pay needs the
-  real host name and a supported connector in the space.
+  completion from the admin; and from the product page: simple product,
+  variable product, quantity change, with a non-empty cart that must stay
+  untouched.
+- PayPal end-to-end once Bogus Pay passes and the owner has added PayPal to
+  the space. Apple Pay is not tested in this prototype.
 
 ## 10. Order of work
 
@@ -562,11 +618,11 @@ documentation leaves open. Results are written to
    credentials in the main plugin's settings.
 2. Spike (section 7).
 3. Plugin skeleton, adapter, API client, settings.
-4. Session creation and buttons on the cart page.
+4. Session creation and buttons on the cart page and the product page.
 5. Shipping callback.
 6. Return, order creation, linking, process, result.
 7. Apple Pay verification file, cleanup, uninstall, readme.
-8. End-to-end pass with Bogus Pay, then PayPal, then Apple Pay.
+8. End-to-end pass with Bogus Pay, then PayPal.
 
 Implementation is delegated to subagents task by task, with the plan giving
 each one the files, interfaces and acceptance checks it needs.
@@ -574,4 +630,4 @@ each one the files, interfaces and acceptance checks it needs.
 ## 11. Left to the builder
 
 Class internals, exact hook names and priorities, table column types, script
-structure, wording of notices, PHPUnit setup, and the Lightsail bundle size.
+structure, wording of notices, PHPUnit setup, and the EC2 instance type.
