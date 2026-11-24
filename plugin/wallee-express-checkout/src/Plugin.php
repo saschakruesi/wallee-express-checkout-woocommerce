@@ -105,6 +105,7 @@ final class Plugin {
 	 */
 	private static function register_components(): void {
 		Session\Installer::register();
+		Http\SessionController::register();
 		if ( is_admin() ) {
 			Admin\Settings::register();
 		}
