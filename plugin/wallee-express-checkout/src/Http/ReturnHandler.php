@@ -253,15 +253,6 @@ final class ReturnHandler {
 			return $this->toCart( Notices::forReason( 'invalid_link', Notices::CHARGE_UNKNOWN ) );
 		}
 
-		// Without the SDK shim the main plugin cannot read the transaction this
-		// return would start (its webhooks would fail): nothing is claimed,
-		// created or sent to wallee.
-		if ( ! call_user_func( $this->available ) ) {
-			$this->log( 'Return: express checkout is not available (main plugin or SDK compatibility shim); session not processed.', 'warning' );
-
-			return $this->toCart( Notices::forReason( Notices::UNAVAILABLE, Notices::CHARGE_NONE ) );
-		}
-
 		$record = $this->repository->findByUuid( $uuid );
 		if ( null === $record ) {
 			$this->log( 'Return: unknown session.', 'warning' );
@@ -279,6 +270,15 @@ final class ReturnHandler {
 
 		if ( SessionRecord::CREATED !== $record->state() ) {
 			return $this->settled( $record );
+		}
+		// Without the SDK shim the main plugin cannot read the transaction this
+		// return would start (its webhooks would fail): nothing is claimed,
+		// created or sent to wallee. Only a row still `created` gets here, so
+		// no payment was started; a reload of a processed row is settled above.
+		if ( ! call_user_func( $this->available ) ) {
+			$this->log( 'Return: express checkout is not available (main plugin or SDK compatibility shim); session not processed.', 'warning' );
+
+			return $this->toCart( Notices::forReason( Notices::UNAVAILABLE, Notices::CHARGE_NONE ) );
 		}
 		if ( ! $this->repository->claim( $record->id(), SessionRecord::CREATED, SessionRecord::ORDERING ) ) {
 			$current = $this->repository->findByUuid( $uuid );

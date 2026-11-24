@@ -475,6 +475,53 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertContains( 'warning: Return: express checkout is not available (main plugin or SDK compatibility shim); session not processed.', $this->logs );
 	}
 
+	/**
+	 * @dataProvider processed_states
+	 *
+	 * @param string $state Row state.
+	 */
+	public function test_a_reload_of_a_processed_return_without_the_shim_goes_to_the_order( string $state ) {
+		$this->available                   = false;
+		$this->repository->row['state']    = $state;
+		$this->repository->row['order_id'] = 501;
+		$this->orders->orders[501]         = new \WC_Order( 501, 60.11 );
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->api->calls );
+		$this->assertSame( array(), $this->notices, 'no "not charged" message' );
+	}
+
+	public function processed_states(): array {
+		return array(
+			'processed' => array( 'processed' ),
+			'completed' => array( 'completed' ),
+		);
+	}
+
+	/**
+	 * @dataProvider moved_on_states
+	 *
+	 * @param string $state Row state.
+	 */
+	public function test_a_return_that_moved_on_without_the_shim_never_says_not_charged( string $state ) {
+		$this->available                   = false;
+		$this->repository->row['state']    = $state;
+		$this->repository->row['order_id'] = 501;
+		$this->orders->orders[501]         = new \WC_Order( 501, 60.11 );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->api->calls );
+		$this->assertCount( 1, $this->notices );
+		$this->assertStringNotContainsString( 'not been charged', $this->notices[0] );
+	}
+
+	public function moved_on_states(): array {
+		return array(
+			'ordering' => array( 'ordering' ),
+			'failed'   => array( 'failed' ),
+		);
+	}
+
 	public function test_a_bad_signature_is_still_reported_as_such_without_the_shim() {
 		$this->available = false;
 
