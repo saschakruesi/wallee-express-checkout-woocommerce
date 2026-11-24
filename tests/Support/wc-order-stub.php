@@ -35,6 +35,10 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 			return $this->id;
 		}
 
+		public function get_order_number() {
+			return (string) $this->id;
+		}
+
 		public function get_total() {
 			return $this->total;
 		}

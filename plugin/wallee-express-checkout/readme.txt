@@ -90,6 +90,7 @@ Each host name (with and without `www`) is registered separately. Apple Pay is n
 
 = 0.1.1 =
 * Security fixes: validation of product variation data, environment check, coupon re-validation, destination and tax location checks, rate limiting, link lifetime; staging hardening.
+* Fix: wallets that complete the payment themselves (PayPal) no longer fail a paid order. wallee's redirect after the payment start is followed only to the wallee host or to the add-on's own result links; otherwise the customer goes to the add-on's success link. An order whose money is already reserved or taken fails only for a missing e-mail, an invalid coupon or a changed destination (with an ACTION REQUIRED note), never for a technical reason.
 
 = 0.1.0 =
 * Fix wave after the branch review: background linking of every order, robust handling of unclear process answers, orders without e-mail fail before payment, own settings tab, session renewal from the real expiry, fail-closed rounding check, buttons off without the SDK shim or without shippable items.

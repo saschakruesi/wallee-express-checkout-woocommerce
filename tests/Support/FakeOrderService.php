@@ -81,6 +81,13 @@ class FakeOrderService extends OrderService {
 	public $coupon_reason = null;
 
 	/**
+	 * Error customerCoupons() throws, if any.
+	 *
+	 * @var \Throwable|null
+	 */
+	public $coupon_error = null;
+
+	/**
 	 * Calls of customerCoupons(): the e-mail passed.
 	 *
 	 * @var string[]
@@ -184,9 +191,13 @@ class FakeOrderService extends OrderService {
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
 	 * @param string       $email    E-mail.
+	 * @throws \Throwable The scripted error.
 	 */
 	public function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
 		$this->coupon_checks[] = $email;
+		if ( null !== $this->coupon_error ) {
+			throw $this->coupon_error;
+		}
 
 		return $this->coupon_reason;
 	}

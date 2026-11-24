@@ -51,6 +51,28 @@ final class ReturnHandler {
 	const MONEY_MOVED_STATES = array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' );
 
 	/**
+	 * Transaction states in which a payment is under way or done.
+	 */
+	const PAYMENT_STATES = array( 'PROCESSING', 'AUTHORIZED', 'COMPLETED', 'FULFILL', 'CONFIRMED' );
+
+	/**
+	 * Session states in which wallee has started the payment.
+	 */
+	const SESSION_PAYMENT_STATES = array( 'PROCESSING', 'AUTHORIZED' );
+
+	/**
+	 * Reasons that fail the order even when the money is already reserved or
+	 * taken (owner decision): the order cannot be fulfilled as approved.
+	 * Every other reason found after the process call is technical and never
+	 * fails an order whose payment went through.
+	 */
+	const FAIL_EVEN_IF_PAID = array( 'no_email', OrderValidator::COUPON_INVALID, OrderValidator::DESTINATION_CHANGED );
+
+	const TARGET_WALLEE = 'wallee';
+	const TARGET_SHOP   = 'shop';
+	const TARGET_OTHER  = 'other';
+
+	/**
 	 * Session storage.
 	 *
 	 * @var SessionRepository
@@ -107,8 +129,8 @@ final class ReturnHandler {
 	private $environment;
 
 	/**
-	 * Host of the configured wallee base URL; the only host the customer is
-	 * sent to.
+	 * Host of the configured wallee base URL; the only external host the
+	 * customer is sent to.
 	 *
 	 * @var string
 	 */
@@ -392,6 +414,10 @@ final class ReturnHandler {
 	 * A transaction that cannot be read is not a failure: the customer goes
 	 * on and the background link retries.
 	 *
+	 * Every failure decided here goes through failAfterProcess(), which keeps
+	 * an order whose money is already reserved or taken unless the reason is
+	 * one the owner decided must fail.
+	 *
 	 * @param SessionRecord $record   Row.
 	 * @param \WC_Order     $order    Order.
 	 * @param string|null   $redirect wallee's redirect URL, null when process probably went through but sent none.
@@ -410,41 +436,150 @@ final class ReturnHandler {
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: session row %d order %d: transaction details not read (%s); retried later.', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
 		}
-		if ( null !== $collected ) {
-			$failure = $this->customerFailure( $record, $order, $collected['email'] );
-			if ( null !== $failure ) {
-				return $this->failBeforePayment( $record, $order, $failure[0], $failure[1], $collected['transaction_id'], $collected['state'] );
+		$transaction_id = null === $collected ? 0 : $collected['transaction_id'];
+		$state          = null === $collected ? '' : $collected['state'];
+
+		try {
+			if ( null !== $collected ) {
+				$failure = $this->customerFailure( $record, $order, $collected['email'] );
+				if ( null !== $failure ) {
+					return $this->failAfterProcess( $record, $order, $failure[0], $failure[1], $transaction_id, $state );
+				}
 			}
-		}
 
-		if ( null !== $redirect ) {
-			$host = wp_parse_url( $redirect, PHP_URL_HOST );
-			if ( ! is_string( $host ) || '' === $this->wallee_host || strtolower( $host ) !== $this->wallee_host ) {
-				return $this->failBeforePayment(
-					$record,
-					$order,
-					'redirect_host_mismatch',
-					Redirects::genericNotice(),
-					null === $collected ? 0 : $collected['transaction_id'],
-					null === $collected ? '' : $collected['state']
-				);
-			}
+			return $this->forward( $record, $order, $redirect, $transaction_id, $state );
+		} catch ( \Throwable $e ) {
+			return $this->failAfterProcess( $record, $order, 'after_process_error (' . get_class( $e ) . ')', Redirects::genericNotice(), $transaction_id, $state );
 		}
+	}
 
-		if ( ! call_user_func( $this->schedule_link, $order->get_id() ) ) {
-			$this->log( sprintf( 'Return: order %d: background link not scheduled.', $order->get_id() ), 'warning' );
-		}
-
+	/**
+	 * Step 11: sends the customer on. wallee's redirect URL is classified by
+	 * its host: the configured wallee host is followed; a shop URL is followed
+	 * only if it is one of the two result URLs given to process, any other
+	 * shop URL is replaced by the success result URL; any other host is never
+	 * followed (the wallet may have completed the payment itself).
+	 *
+	 * @param SessionRecord $record         Row.
+	 * @param \WC_Order     $order          Order.
+	 * @param string|null   $redirect       wallee's redirect URL, null if none.
+	 * @param int           $transaction_id wallee transaction ID, 0 if unknown.
+	 * @param string        $state          Transaction state, '' if unknown.
+	 */
+	private function forward( SessionRecord $record, \WC_Order $order, ?string $redirect, int $transaction_id, string $state ): string {
 		if ( null === $redirect ) {
+			$this->scheduleLink( $order );
 			$this->log( sprintf( 'Return: session row %d: no wallee redirect, order received page.', $record->id() ) );
 
 			return $order->get_checkout_order_received_url();
 		}
 
-		$this->external_host = $this->wallee_host;
-		$this->log( sprintf( 'Return: session row %d redirected to wallee.', $record->id() ) );
+		$target = $this->redirectTarget( $redirect );
+		$this->log( sprintf( 'Return: session row %d redirect target: %s.', $record->id(), self::TARGET_OTHER === $target[0] ? self::TARGET_OTHER . ':' . $target[1] : $target[0] ) );
 
-		return $redirect;
+		if ( self::TARGET_WALLEE === $target[0] ) {
+			$this->scheduleLink( $order );
+			$this->external_host = $this->wallee_host;
+			$this->log( sprintf( 'Return: session row %d redirected to wallee.', $record->id() ) );
+
+			return $redirect;
+		}
+
+		if ( self::TARGET_SHOP === $target[0] ) {
+			$this->scheduleLink( $order );
+			$own = array(
+				SessionService::resultUrl( $record->uuid(), 'success' ),
+				SessionService::resultUrl( $record->uuid(), 'failure' ),
+			);
+			if ( in_array( $redirect, $own, true ) ) {
+				$this->log( sprintf( 'Return: session row %d redirected to its result URL.', $record->id() ) );
+
+				return $redirect;
+			}
+			$this->log( sprintf( 'Return: session row %d: wallee redirect to another shop URL; success result URL instead.', $record->id() ), 'warning' );
+
+			return $this->successUrl( $record );
+		}
+
+		if ( $this->paymentUnderway( $record, $state ) ) {
+			$this->log( sprintf( 'Return: session row %d order %d: redirect_host_unexpected (host %s, transaction %d, state %s); order kept, success result URL.', $record->id(), $order->get_id(), $target[1], $transaction_id, '' === $state ? 'unknown' : $state ), 'warning' );
+			$this->scheduleLink( $order );
+
+			return $this->successUrl( $record );
+		}
+
+		return $this->failAfterProcess( $record, $order, 'redirect_host_unexpected', Redirects::genericNotice(), $transaction_id, $state );
+	}
+
+	/**
+	 * Classifies a redirect URL: the configured wallee host, the shop's own
+	 * host, or another host.
+	 *
+	 * @param string $url Redirect URL from wallee.
+	 * @return array{0: string, 1: string} One of the TARGET_* constants and the URL's host
+	 *                                     (lower case, host characters only, 'none' if absent).
+	 */
+	private function redirectTarget( string $url ): array {
+		$host = wp_parse_url( $url, PHP_URL_HOST );
+		$host = is_string( $host ) ? substr( (string) preg_replace( '/[^a-z0-9.\-]/', '', strtolower( $host ) ), 0, 100 ) : '';
+		if ( '' === $host ) {
+			return array( self::TARGET_OTHER, 'none' );
+		}
+		if ( '' !== $this->wallee_host && $host === $this->wallee_host ) {
+			return array( self::TARGET_WALLEE, $host );
+		}
+		$shop = wp_parse_url( home_url( '/' ), PHP_URL_HOST );
+		if ( is_string( $shop ) && '' !== $shop && strtolower( $shop ) === $host ) {
+			return array( self::TARGET_SHOP, $host );
+		}
+
+		return array( self::TARGET_OTHER, $host );
+	}
+
+	/**
+	 * Whether wallee shows that the payment is under way or done: the
+	 * transaction state read in this request, else a fresh read of the
+	 * session. A session that cannot be read leaves it open, which counts as
+	 * under way: an order is only failed when nothing indicates a payment.
+	 *
+	 * @param SessionRecord $record Row.
+	 * @param string        $state  Transaction state read in this request, '' if unknown.
+	 */
+	private function paymentUnderway( SessionRecord $record, string $state ): bool {
+		if ( in_array( $state, self::PAYMENT_STATES, true ) ) {
+			return true;
+		}
+		try {
+			$session = $this->api->getSession( $record->walleeSessionId() );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Return: session row %d: session unreadable after process (%s).', $record->id(), get_class( $e ) ), 'warning' );
+
+			return true;
+		}
+		$session_state = isset( $session['state'] ) && is_string( $session['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $session['state'] ) : '';
+
+		return in_array( $session_state, self::SESSION_PAYMENT_STATES, true );
+	}
+
+	/**
+	 * Signed success result URL of the row: the order received page once the
+	 * result handler has run.
+	 *
+	 * @param SessionRecord $record Row.
+	 */
+	private function successUrl( SessionRecord $record ): string {
+		return SessionService::resultUrl( $record->uuid(), 'success' );
+	}
+
+	/**
+	 * Schedules the background link, logs a failure to do so.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private function scheduleLink( \WC_Order $order ): void {
+		if ( ! call_user_func( $this->schedule_link, $order->get_id() ) ) {
+			$this->log( sprintf( 'Return: order %d: background link not scheduled.', $order->get_id() ), 'warning' );
+		}
 	}
 
 	/**
@@ -465,7 +600,8 @@ final class ReturnHandler {
 			$reason = $this->orders->customerCoupons( $snapshot, (string) $order->get_billing_email() );
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: order %d: coupon check failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
-			$reason = OrderValidator::COUPON_INVALID;
+
+			return array( 'coupon_check_failed', Redirects::genericNotice() );
 		}
 		if ( null !== $reason ) {
 			return array( OrderValidator::COUPON_INVALID, __( 'A coupon in your cart cannot be used for this order, so the order was not placed. Please check your cart or use the regular checkout.', 'wallee-express-checkout' ) );
@@ -483,22 +619,38 @@ final class ReturnHandler {
 	}
 
 	/**
-	 * The order must not go on to wallee's payment step: order `failed`, row
-	 * `failed`, cart with a notice. If the money is already reserved or taken,
-	 * the merchant must void or refund it in the wallee portal.
+	 * The one place where a failure found after the process call is decided.
+	 *
+	 * If the transaction read in this request has the money reserved or taken
+	 * (AUTHORIZED, COMPLETED, FULFILL), only the reasons the owner decided
+	 * must fail (FAIL_EVEN_IF_PAID) fail the order; the order gets an ACTION
+	 * REQUIRED note and the customer is told the payment was received. Any
+	 * other (technical) reason keeps the order and sends the customer to the
+	 * success result URL.
+	 *
+	 * Otherwise the order must not go on to wallee's payment step: order
+	 * `failed`, row `failed`, cart with a notice.
 	 *
 	 * @param SessionRecord $record         Row.
 	 * @param \WC_Order     $order          Order.
 	 * @param string        $reason         Reason code (order note and log).
-	 * @param string        $notice         Customer notice.
+	 * @param string        $notice         Customer notice when nothing was taken.
 	 * @param int           $transaction_id wallee transaction ID, 0 if unknown.
 	 * @param string        $state          Transaction state, '' if unknown.
 	 */
-	private function failBeforePayment( SessionRecord $record, \WC_Order $order, string $reason, string $notice, int $transaction_id, string $state ): string {
+	private function failAfterProcess( SessionRecord $record, \WC_Order $order, string $reason, string $notice, int $transaction_id, string $state ): string {
+		$paid = $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true );
+		if ( $paid && ! in_array( $reason, self::FAIL_EVEN_IF_PAID, true ) ) {
+			$this->log( sprintf( 'Return: session row %d order %d: %s, but transaction %d is %s; order kept, success result URL.', $record->id(), $order->get_id(), $reason, $transaction_id, $state ), 'warning' );
+			$this->scheduleLink( $order );
+
+			return $this->successUrl( $record );
+		}
+
 		$this->log( sprintf( 'Return: session row %d order %d failed: %s (transaction %d, state %s).', $record->id(), $order->get_id(), $reason, $transaction_id, '' === $state ? 'unknown' : $state ), 'error' );
 		try {
 			$this->orders->fail( $order, $reason );
-			if ( $transaction_id > 0 && in_array( $state, self::MONEY_MOVED_STATES, true ) ) {
+			if ( $paid ) {
 				$order->add_order_note(
 					sprintf(
 						/* translators: 1: wallee transaction ID, 2: transaction state, 3: reason code. */
@@ -515,7 +667,20 @@ final class ReturnHandler {
 		}
 		$this->markFailed( $record );
 
-		return $this->toCart( $notice );
+		return $this->toCart( $paid ? self::paymentTakenNotice( $order ) : $notice );
+	}
+
+	/**
+	 * Notice for a failed order whose money is already reserved or taken.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private static function paymentTakenNotice( \WC_Order $order ): string {
+		return sprintf(
+			/* translators: %s: order number. */
+			__( 'Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order %s.', 'wallee-express-checkout' ),
+			$order->get_order_number()
+		);
 	}
 
 	/**

@@ -14,6 +14,7 @@ use Wallee\ExpressCheckout\Api\ApiException;
 use Wallee\ExpressCheckout\Http\ReturnHandler;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
 use Wallee\ExpressCheckout\Security\UrlSigner;
+use Wallee\ExpressCheckout\Session\SessionService;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
 use Wallee\ExpressCheckout\Tests\Support\FakeOrderService;
 use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
@@ -30,6 +31,7 @@ class ReturnHandlerTest extends TestCase {
 	const WALLEE   = 'https://app-wallee.com/s/4711/payment/chargeattempt/redirect/1?securityToken=t';
 	const RECEIVED = 'https://shop.test/checkout/order-received/501/?key=wc_order_k';
 	const TEST_NOTE = 'Test payment (wallee Express Checkout TEST environment). No real money was moved.';
+	const PAID_NOTICE = 'Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order 501.';
 
 	/** @var FakeSessionRepository */
 	private $repository;
@@ -543,6 +545,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertStringContainsString( '629017977', $notes[1] );
 		$this->assertStringContainsString( 'no_email', $notes[1] );
 		$this->assertStringContainsString( 'error: Return: order 501: wallee transaction 629017977 must be voided or refunded in the wallee portal', implode( "\n", $this->logs ) );
+		$this->assertSame( array( 'error: ' . self::PAID_NOTICE ), $this->notices, 'the customer is told the payment was received' );
 	}
 
 	public function money_moved_states(): array {
@@ -686,6 +689,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
 		$this->assertStringContainsString( 'ACTION REQUIRED', $this->orders->orders[501]->notes[1] );
 		$this->assertStringContainsString( 'coupon_invalid', $this->orders->orders[501]->notes[1] );
+		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
 	}
 
 	public function test_coupons_are_not_rechecked_without_an_email() {
@@ -767,13 +771,117 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
 	}
 
-	public function test_a_redirect_to_another_host_than_the_configured_wallee_host_fails_the_order() {
+	private static function successUrl(): string {
+		return SessionService::resultUrl( self::UUID, 'success' );
+	}
+
+	/**
+	 * Asserts the order was kept after process and the customer goes to the success result URL.
+	 *
+	 * @param string $url Returned URL.
+	 */
+	private function assertKeptToSuccess( string $url ): void {
+		$this->assertSame( self::successUrl(), $url );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( array( 501 ), $this->scheduled, 'background link scheduled' );
+		$this->assertSame( array(), $this->notices );
+	}
+
+	public function test_a_redirect_to_the_wallee_host_is_followed_and_logged_as_wallee() {
+		$handler = $this->handler();
+
+		$this->assertSame( self::WALLEE, $handler->handle( $this->query() ) );
+		$this->assertSame( 'app-wallee.com', $handler->externalHost() );
+		$this->assertContains( 'info: Return: session row 7 redirect target: wallee.', $this->logs );
+	}
+
+	public function test_a_redirect_to_our_success_result_url_is_followed_without_failing_the_order() {
+		$this->api->process     = self::successUrl();
+		$this->api->transaction['state'] = 'FULFILL';
+		$handler                = $this->handler();
+
+		$this->assertKeptToSuccess( $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost(), 'an own URL' );
+		$this->assertContains( 'info: Return: session row 7 redirect target: shop.', $this->logs );
+	}
+
+	public function test_a_redirect_to_our_failure_result_url_is_followed() {
+		$failure            = SessionService::resultUrl( self::UUID, 'failure' );
+		$this->api->process = $failure;
+
+		$this->assertSame( $failure, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed, 'the result handler decides' );
+	}
+
+	public function test_another_shop_url_is_replaced_by_our_success_result_url() {
+		$this->api->process = 'https://shop.test/some/page/?next=elsewhere';
+		$handler            = $this->handler();
+
+		$this->assertKeptToSuccess( $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost() );
+		$this->assertStringNotContainsString( 'some/page', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_foreign_host_with_a_paid_transaction_keeps_the_order_and_goes_to_the_success_url() {
+		$this->api->process              = 'https://www.paypal.example/checkoutnow?token=EC-SECRET';
+		$this->api->transaction['state'] = 'FULFILL';
+		$handler                         = $this->handler();
+
+		$this->assertKeptToSuccess( $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost(), 'never sent to the foreign host' );
+		$all = implode( "\n", $this->logs );
+		$this->assertStringContainsString( 'info: Return: session row 7 redirect target: other:www.paypal.example.', $all );
+		$this->assertStringContainsString( 'redirect_host_unexpected (host www.paypal.example, transaction 629017977, state FULFILL)', $all );
+		$this->assertStringNotContainsString( 'checkoutnow', $all );
+		$this->assertStringNotContainsString( 'SECRET', $all );
+		$this->assertSame( array( self::TEST_NOTE ), $this->orders->orders[501]->notes, 'no ACTION REQUIRED note' );
+	}
+
+	public function test_a_foreign_host_with_a_processing_session_keeps_the_order() {
+		$this->api->process     = 'https://wallet.example/done';
+		$this->api->transaction = new ApiException( 'timeout' );
+
+		$this->assertKeptToSuccess( $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_a_foreign_host_without_any_sign_of_a_payment_fails_the_order() {
+		$this->api->process     = 'https://wallet.example/done';
+		$this->api->transaction = new ApiException( 'timeout' );
+		$this->api->sessions    = array( self::approved(), array_merge( self::processing(), array( 'state' => 'FAILED' ) ) );
+		$handler                = $this->handler();
+
+		$this->assertFailedBeforePayment( 'redirect_host_unexpected', $handler->handle( $this->query() ) );
+		$this->assertNull( $handler->externalHost() );
+		$this->assertSame( array( self::TEST_NOTE ), $this->orders->orders[501]->notes );
+	}
+
+	public function test_a_configured_wallee_host_that_differs_from_the_redirect_never_fails_a_payment_under_way() {
 		$this->wallee_host = 'checkout.example.org';
 		$handler           = $this->handler();
 
-		$this->assertFailedBeforePayment( 'redirect_host_mismatch', $handler->handle( $this->query() ) );
+		$this->assertKeptToSuccess( $handler->handle( $this->query() ) );
 		$this->assertNull( $handler->externalHost() );
-		$this->assertStringContainsString( 'failed: redirect_host_mismatch', implode( "\n", $this->logs ) );
+		$this->assertStringContainsString( 'redirect target: other:app-wallee.com', implode( "\n", $this->logs ) );
+	}
+
+	/**
+	 * @dataProvider money_moved_states
+	 *
+	 * @param string $state Transaction state.
+	 */
+	public function test_a_technical_error_after_process_never_fails_a_paid_order( string $state ) {
+		$this->orders->coupon_error      = new \RuntimeException( 'db' );
+		$this->api->transaction['state'] = $state;
+
+		$this->assertKeptToSuccess( $this->handler()->handle( $this->query() ) );
+		$this->assertStringContainsString( 'coupon_check_failed, but transaction 629017977 is ' . $state . '; order kept', implode( "\n", $this->logs ) );
+	}
+
+	public function test_a_technical_error_after_process_fails_an_unpaid_order() {
+		$this->orders->coupon_error = new \RuntimeException( 'db' );
+
+		$this->assertFailedBeforePayment( 'coupon_check_failed', $this->handler()->handle( $this->query() ) );
 	}
 
 	public function test_the_redirect_host_is_compared_without_case() {
