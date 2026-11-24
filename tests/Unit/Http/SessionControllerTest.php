@@ -8,6 +8,7 @@
 namespace Wallee\ExpressCheckout\Tests\Unit\Http;
 
 use Brain\Monkey;
+use Brain\Monkey\Filters;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Http\SessionController;
@@ -15,6 +16,8 @@ use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Tests\Support\FakeWpdb;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
+
+require_once dirname( __DIR__, 2 ) . '/Support/wp-rest-stub.php';
 
 /**
  * Request double with headers only.
@@ -172,9 +175,19 @@ class SessionControllerTest extends TestCase {
 		$this->assertTrue( $this->controller->rateAllows( '203.0.113.9' ) );
 
 		$this->assertSame(
-			array( 'wallee_ec_rl_' . md5( 'session|global' ), 'wallee_ec_rl_' . md5( 'session|203.0.113.9' ) ),
-			$this->buckets
+			array( 'wallee_ec_rl_' . md5( 'session|203.0.113.9' ), 'wallee_ec_rl_' . md5( 'session|global' ) ),
+			$this->buckets,
+			'the client bucket first'
 		);
+	}
+
+	public function test_a_client_that_exhausts_its_own_bucket_does_not_consume_the_global_bucket() {
+		for ( $i = 0; $i < 50; $i++ ) {
+			$this->controller->rateAllows( '203.0.113.9' );
+		}
+
+		$this->assertSame( 20, $this->transients[ 'wallee_ec_rl_' . md5( 'session|global' ) ] );
+		$this->assertTrue( $this->controller->rateAllows( '198.51.100.1' ), 'other clients are still served' );
 	}
 
 	public function test_per_ip_limit_denies_after_twenty() {
@@ -276,4 +289,157 @@ class SessionControllerTest extends TestCase {
 		$this->db->next_row = null;
 		$this->assertNull( $this->controller->reusableSession( $this->entry(), 'cart', 'h1' ), 'row missing' );
 	}
+
+	/**
+	 * Sets REMOTE_ADDR for one test.
+	 *
+	 * @param string|null $address Address, null to unset.
+	 */
+	private function remote_addr( ?string $address ): void {
+		if ( null === $address ) {
+			unset( $_SERVER['REMOTE_ADDR'] );
+			return;
+		}
+		$_SERVER['REMOTE_ADDR'] = $address;
+	}
+
+	public function test_client_ip_is_the_remote_address() {
+		Functions\when( 'wp_unslash' )->returnArg();
+		$saved = isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : null;
+
+		$this->remote_addr( '203.0.113.9' );
+		$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.7';
+		$_SERVER['HTTP_X_REAL_IP']       = '198.51.100.8';
+		$this->assertSame( '203.0.113.9', SessionController::clientIp(), 'forwarding headers are not trusted' );
+
+		$this->remote_addr( '2001:db8::1' );
+		$this->assertSame( '2001:db8::1', SessionController::clientIp() );
+
+		$this->remote_addr( 'not an ip' );
+		$this->assertSame( 'unknown', SessionController::clientIp() );
+		$this->remote_addr( null );
+		$this->assertSame( 'unknown', SessionController::clientIp() );
+
+		unset( $_SERVER['HTTP_X_FORWARDED_FOR'], $_SERVER['HTTP_X_REAL_IP'] );
+		$this->remote_addr( $saved );
+	}
+
+	public function test_client_ip_can_be_supplied_by_a_trusted_proxy_filter() {
+		Functions\when( 'wp_unslash' )->returnArg();
+		$saved = isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : null;
+		$this->remote_addr( '10.0.0.5' );
+
+		Filters\expectApplied( 'wallee_ec_client_ip' )->once()->with( '10.0.0.5' )->andReturn( '198.51.100.7' );
+		$this->assertSame( '198.51.100.7', SessionController::clientIp() );
+
+		Filters\expectApplied( 'wallee_ec_client_ip' )->once()->andReturn( 'garbage' );
+		$this->assertSame( '10.0.0.5', SessionController::clientIp(), 'a value that is no IP address is ignored' );
+
+		$this->remote_addr( $saved );
+	}
+
+	/**
+	 * WooCommerce with a session double.
+	 *
+	 * @param bool $has_session Whether the caller has a WooCommerce session.
+	 * @return object Session double.
+	 */
+	private function woocommerce( bool $has_session ) {
+		$session = $this->getMockBuilder( \stdClass::class )->addMethods( array( 'has_session', 'set', 'get', 'set_customer_session_cookie' ) )->getMock();
+		$session->method( 'has_session' )->willReturn( $has_session );
+		Functions\when( 'WC' )->justReturn(
+			(object) array(
+				'session' => $session,
+				'cart'    => null,
+			)
+		);
+
+		return $session;
+	}
+
+	public function test_a_caller_without_a_woocommerce_session_gets_none_started() {
+		$session = $this->woocommerce( false );
+		$session->expects( $this->never() )->method( 'set_customer_session_cookie' );
+		$session->expects( $this->never() )->method( 'set' );
+
+		$this->controller->remember( 'product', 'h1', array( 'sessionToken' => 't', 'uuid' => 'u' ) );
+	}
+
+	public function test_a_caller_with_a_woocommerce_session_keeps_the_token_for_reuse() {
+		$session = $this->woocommerce( true );
+		$session->expects( $this->never() )->method( 'set_customer_session_cookie' );
+		$session->expects( $this->once() )->method( 'set' )->with( 'wallee_ec_session', $this->callback( static function ( $entry ) {
+			return 'product' === $entry['context'] && 't' === $entry['token'];
+		} ) );
+
+		$this->controller->remember( 'product', 'h1', array( 'sessionToken' => 't', 'uuid' => 'u' ) );
+	}
+
+	public function test_a_cart_request_without_a_woocommerce_session_is_refused_as_empty() {
+		$this->woocommerce( false );
+		Functions\when( 'wc_load_cart' )->justReturn( null );
+		Functions\when( 'wp_unslash' )->returnArg();
+		Functions\when( 'get_option' )->alias(
+			static function ( $name, $default = false ) {
+				return 'wallee_ec_cart_enabled' === $name ? 'yes' : $default;
+			}
+		);
+		$request = new class() {
+			public function get_param( $name ) {
+				return 'context' === $name ? 'cart' : null;
+			}
+		};
+
+		$response = $this->controller->handle( $request );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame(
+			array(
+				'sessionToken' => null,
+				'reason'       => 'empty',
+			),
+			$response->get_data()
+		);
+	}
+
+	public function test_every_session_route_response_is_marked_not_cacheable() {
+		Functions\when( 'wp_get_nocache_headers' )->justReturn(
+			array(
+				'Expires'       => 'Wed, 11 Jan 1984 05:00:00 GMT',
+				'Cache-Control' => 'no-cache, must-revalidate, max-age=0, no-store, private',
+				'Last-Modified' => false,
+			)
+		);
+		$route = static function ( string $path ) {
+			return new class( $path ) {
+				private $path;
+				public function __construct( $path ) {
+					$this->path = $path;
+				}
+				public function get_route() {
+					return $this->path;
+				}
+			};
+		};
+
+		$refused = SessionController::noCache( new \WP_REST_Response( array( 'error' => 'rate_limited' ), 429 ), null, $route( '/wallee-ec/v1/session' ) );
+		$this->assertSame(
+			array(
+				'Expires'       => 'Wed, 11 Jan 1984 05:00:00 GMT',
+				'Cache-Control' => 'no-cache, must-revalidate, max-age=0, no-store, private',
+			),
+			$refused->get_headers()
+		);
+
+		$other = SessionController::noCache( new \WP_REST_Response( array(), 200 ), null, $route( '/wp/v2/posts' ) );
+		$this->assertSame( array(), $other->get_headers() );
+		$this->assertSame( 'x', SessionController::noCache( 'x', null, $route( '/wallee-ec/v1/session' ) ) );
+	}
+
+	public function test_the_no_cache_filter_is_registered() {
+		SessionController::register();
+
+		$this->assertSame( 10, has_filter( 'rest_post_dispatch', array( SessionController::class, 'noCache' ) ) );
+	}
 }
+

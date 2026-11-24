@@ -82,6 +82,33 @@ final class SessionController {
 				( new self( new RateLimiter(), new SessionRepository( $wpdb ) ) )->registerRoute();
 			}
 		);
+		add_filter( 'rest_post_dispatch', array( self::class, 'noCache' ), 10, 3 );
+	}
+
+	/**
+	 * `rest_post_dispatch` filter: every response of the session route,
+	 * refusals and errors included, must not be cached.
+	 *
+	 * @param mixed            $response Response.
+	 * @param mixed            $server   REST server.
+	 * @param \WP_REST_Request $request  Request.
+	 * @return mixed
+	 */
+	public static function noCache( $response, $server, $request ) {
+		unset( $server );
+		if ( ! $response instanceof \WP_REST_Response || ! is_object( $request ) || ! method_exists( $request, 'get_route' ) ) {
+			return $response;
+		}
+		if ( '/' . self::NAMESPACE_NAME . '/session' !== $request->get_route() ) {
+			return $response;
+		}
+		foreach ( wp_get_nocache_headers() as $name => $value ) {
+			if ( '' !== (string) $value ) {
+				$response->header( $name, (string) $value );
+			}
+		}
+
+		return $response;
 	}
 
 	/**
@@ -190,14 +217,41 @@ final class SessionController {
 	}
 
 	/**
-	 * Applies the global and the per-IP rate limit. The global bucket protects
-	 * the paid wallee call against forged forwarding headers.
+	 * Applies the per-client and the global rate limit. The client's own
+	 * bucket comes first: a request it refuses does not count against the
+	 * global bucket, so one client cannot use up everyone's allowance.
 	 *
 	 * @param string $ip Client IP address.
 	 */
 	public function rateAllows( string $ip ): bool {
-		return $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW )
-			&& $this->limiter->allow( 'session|' . $ip, self::RATE_MAX, self::RATE_WINDOW );
+		return $this->limiter->allow( 'session|' . $ip, self::RATE_MAX, self::RATE_WINDOW )
+			&& $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW );
+	}
+
+	/**
+	 * The client address for rate limiting: `REMOTE_ADDR`, which a client
+	 * cannot choose. Shops behind a trusted proxy or CDN can return the
+	 * forwarded address through the filter `wallee_ec_client_ip`; a value
+	 * that is not an IP address is ignored.
+	 */
+	public static function clientIp(): string {
+		$remote = isset( $_SERVER['REMOTE_ADDR'] ) ? filter_var( wp_unslash( $_SERVER['REMOTE_ADDR'] ), FILTER_VALIDATE_IP ) : false; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Validated as an IP address.
+		$remote = false === $remote ? '' : (string) $remote;
+
+		$filtered = apply_filters( 'wallee_ec_client_ip', $remote );
+		if ( is_string( $filtered ) && false !== filter_var( $filtered, FILTER_VALIDATE_IP ) ) {
+			return $filtered;
+		}
+
+		return '' === $remote ? 'unknown' : $remote;
+	}
+
+	/**
+	 * Whether the caller has a WooCommerce session (a session cookie or a
+	 * logged-in user). Callers without one get none from this endpoint.
+	 */
+	public static function hasCustomerSession(): bool {
+		return WC()->session && WC()->session->has_session();
 	}
 
 	/**
@@ -209,7 +263,7 @@ final class SessionController {
 	public function handle( $request ) {
 		$adapter = Plugin::adapter();
 
-		if ( ! $this->rateAllows( \WC_Geolocation::get_ip_address() ) ) {
+		if ( ! $this->rateAllows( self::clientIp() ) ) {
 			return new \WP_REST_Response( array( 'error' => 'rate_limited' ), 429 );
 		}
 
@@ -219,13 +273,18 @@ final class SessionController {
 		if ( ! $enabled ) {
 			return self::refusal( 'disabled' );
 		}
-		if ( ! Plugin::isActive() ) {
-			return self::refusal( 'not_configured' );
-		}
 
 		// REST requests do not load the cart, customer and session by default.
 		if ( null === WC()->cart ) {
 			wc_load_cart();
+		}
+		// Without a WooCommerce session the cart is empty: refuse before any
+		// further work (and never start a session for such a caller).
+		if ( CartSnapshot::CONTEXT_CART === $context && ! self::hasCustomerSession() ) {
+			return self::refusal( 'empty' );
+		}
+		if ( ! Plugin::isActive() ) {
+			return self::refusal( 'not_configured' );
 		}
 
 		try {
@@ -343,7 +402,7 @@ final class SessionController {
 	 * @return array|null Response body, see tokenResponse().
 	 */
 	private function reusable( string $context, string $hash ): ?array {
-		if ( ! WC()->session ) {
+		if ( ! self::hasCustomerSession() ) {
 			return null;
 		}
 		$entry = WC()->session->get( self::SESSION_KEY );
@@ -398,18 +457,17 @@ final class SessionController {
 	}
 
 	/**
-	 * Remembers the token in the customer's WooCommerce session.
+	 * Remembers the token in the customer's WooCommerce session, if the
+	 * caller has one. No session is started for a caller without one: such
+	 * a caller gets a new token on every page load.
 	 *
 	 * @param string $context Context.
 	 * @param string $hash    Snapshot hash.
 	 * @param array  $result  Result of SessionService::create().
 	 */
-	private function remember( string $context, string $hash, array $result ): void {
-		if ( ! WC()->session ) {
+	public function remember( string $context, string $hash, array $result ): void {
+		if ( ! self::hasCustomerSession() ) {
 			return;
-		}
-		if ( ! WC()->session->has_session() ) {
-			WC()->session->set_customer_session_cookie( true );
 		}
 		WC()->session->set(
 			self::SESSION_KEY,
