@@ -252,3 +252,14 @@ Where this section and the text above disagree, this section wins.
 9. **Redirect host.** The wallee redirect URL's host must equal the host of
    the configured wallee base URL; otherwise the order fails before the
    redirect (`redirect_host_mismatch`, the `no_email` path).
+   *Superseded (regression fix after 0.1.1):* wallets such as PayPal
+   complete the payment inside the wallet, and the redirect then is not on
+   the wallee host. The target is classified: wallee host → followed; shop
+   host → followed only if it is one of the two result URLs given to
+   process, else the success result URL; any other host → never followed,
+   the order is kept (success result URL) when the transaction or session
+   shows a payment under way or done (`redirect_host_unexpected`), and
+   fails only when nothing indicates a payment. After process, an order
+   whose transaction is AUTHORIZED, COMPLETED or FULFILL fails only for
+   `no_email`, `coupon_invalid` or `destination_changed`; technical reasons
+   never fail it.
