@@ -13,6 +13,8 @@
 	<rule ref="WordPress">
 		<!-- PSR-4 class file names are used instead of class-*.php. -->
 		<exclude name="WordPress.Files.FileName"/>
+		<!-- Public camelCase method names are binding across the plugin's tasks. -->
+		<exclude name="WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid"/>
 	</rule>
 
 	<rule ref="WordPress.WP.I18n">
