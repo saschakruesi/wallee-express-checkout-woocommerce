@@ -198,7 +198,11 @@ final class SessionController {
 	}
 
 	/**
-	 * Sanitises variation attributes: scalar keys and values only.
+	 * Sanitises variation attributes: scalar values only. Keys are lower-cased
+	 * and keep only the characters of an attribute slug (`a-z`, `0-9`, `_`,
+	 * `-` and `%`, since the slug of a name with non-ASCII characters is
+	 * URL-encoded); whether a key is an attribute of the product is decided
+	 * later, against the product.
 	 *
 	 * @param mixed $value Raw value.
 	 */
@@ -209,7 +213,8 @@ final class SessionController {
 		}
 		foreach ( $value as $attribute => $selected ) {
 			if ( is_scalar( $selected ) ) {
-				$clean[ sanitize_text_field( (string) $attribute ) ] = sanitize_text_field( (string) $selected );
+				$key           = (string) preg_replace( '/[^a-z0-9_%\-]/', '', strtolower( (string) $attribute ) );
+				$clean[ $key ] = sanitize_text_field( (string) $selected );
 			}
 		}
 
@@ -224,8 +229,32 @@ final class SessionController {
 	 * @param string $ip Client IP address.
 	 */
 	public function rateAllows( string $ip ): bool {
-		return $this->limiter->allow( 'session|' . $ip, self::RATE_MAX, self::RATE_WINDOW )
+		return $this->limiter->allow( 'session|' . self::rateKey( $ip ), self::RATE_MAX, self::RATE_WINDOW )
 			&& $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW );
+	}
+
+	/**
+	 * The rate limit bucket of a client address. An IPv4 address is its own
+	 * bucket. An IPv6 address counts as its /64 network, the block one
+	 * subscriber usually gets, so a host cannot rotate addresses within it to
+	 * get more requests. An IPv4-mapped IPv6 address counts as its IPv4
+	 * address. Anything else is used as it is.
+	 *
+	 * @param string $ip Client IP address, or 'unknown'.
+	 */
+	public static function rateKey( string $ip ): string {
+		if ( false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+			return $ip;
+		}
+		$packed = inet_pton( $ip );
+		if ( false === $packed || 16 !== strlen( $packed ) ) {
+			return $ip;
+		}
+		if ( str_repeat( "\0", 10 ) . "\xff\xff" === substr( $packed, 0, 12 ) ) {
+			return (string) inet_ntop( substr( $packed, 12 ) );
+		}
+
+		return inet_ntop( substr( $packed, 0, 8 ) . str_repeat( "\0", 8 ) ) . '/64';
 	}
 
 	/**

@@ -171,6 +171,30 @@ class SessionControllerTest extends TestCase {
 		$this->assertSame( array(), SessionController::sanitizeVariation( 'x' ) );
 	}
 
+	public function test_attribute_keys_keep_url_encoded_names_and_only_slug_characters() {
+		// As WordPress does: sanitize_text_field removes percent-encoded octets.
+		Functions\when( 'sanitize_text_field' )->alias(
+			static function ( $text ) {
+				return trim( (string) preg_replace( '/%[a-f0-9]{2}/i', '', (string) $text ) );
+			}
+		);
+
+		$this->assertSame(
+			array(
+				'attribute_gr%c3%b6%c3%9fe' => 'XL',
+				'attribute_pa_color'        => 'blue',
+				'attribute_scriptx'         => 'v',
+			),
+			SessionController::sanitizeVariation(
+				array(
+					'attribute_gr%C3%B6%C3%9Fe' => 'XL',
+					'Attribute_PA_Color'        => 'blue',
+					'attribute_<script>x'       => 'v',
+				)
+			)
+		);
+	}
+
 	public function test_both_rate_limit_buckets_are_consulted() {
 		$this->assertTrue( $this->controller->rateAllows( '203.0.113.9' ) );
 
@@ -196,6 +220,23 @@ class SessionControllerTest extends TestCase {
 		}
 		$this->assertFalse( $this->controller->rateAllows( '203.0.113.9' ) );
 		$this->assertTrue( $this->controller->rateAllows( '203.0.113.10' ) );
+	}
+
+	public function test_ipv6_clients_share_one_bucket_per_64_prefix() {
+		for ( $i = 1; $i <= 20; $i++ ) {
+			$this->assertTrue( $this->controller->rateAllows( '2001:db8:1:2::' . dechex( $i ) ) );
+		}
+
+		$this->assertFalse( $this->controller->rateAllows( '2001:db8:1:2:ffff:ffff:ffff:ffff' ), 'another address in the same /64' );
+		$this->assertTrue( $this->controller->rateAllows( '2001:db8:1:3::1' ), 'the next /64 is another client' );
+	}
+
+	public function test_rate_key_of_a_client_address() {
+		$this->assertSame( '203.0.113.9', SessionController::rateKey( '203.0.113.9' ), 'IPv4 unchanged' );
+		$this->assertSame( '2001:db8:1:2::/64', SessionController::rateKey( '2001:DB8:1:2:aaaa:bbbb:cccc:dddd' ) );
+		$this->assertSame( '2001:db8::/64', SessionController::rateKey( '2001:db8::1' ) );
+		$this->assertSame( '203.0.113.9', SessionController::rateKey( '::ffff:203.0.113.9' ), 'IPv4-mapped is the IPv4 client' );
+		$this->assertSame( 'unknown', SessionController::rateKey( 'unknown' ) );
 	}
 
 	public function test_global_limit_denies_across_ips() {
