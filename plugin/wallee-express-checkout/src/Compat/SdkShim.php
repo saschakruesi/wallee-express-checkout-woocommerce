@@ -23,6 +23,11 @@ final class SdkShim {
 	const VALUE      = 'EXPRESS_CHECKOUT';
 
 	/**
+	 * Constants of the SDK 3.4.11 enum; our compat copy declares exactly these plus VALUE.
+	 */
+	const KNOWN_CONSTANTS = array( 'IFRAME', 'LIGHTBOX', 'PAYMENT_PAGE', 'MOBILE_SDK', 'TERMINAL' );
+
+	/**
 	 * Path of our compat copy.
 	 *
 	 * @return string
@@ -35,24 +40,28 @@ final class SdkShim {
 	 * Loads the compat enum when the main plugin's SDK needs it. Call at plugin load time.
 	 */
 	public static function install(): void {
-		if ( class_exists( self::ENUM_CLASS, false ) ) {
+		try {
+			if ( class_exists( self::ENUM_CLASS, false ) ) {
+				return;
+			}
+			if ( ! apply_filters( 'wallee_ec_enable_sdk_shim', true ) ) {
+				return;
+			}
+
+			$plugins = (array) get_option( 'active_plugins', array() );
+			if ( is_multisite() ) {
+				$plugins = array_merge( $plugins, array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) ) );
+			}
+
+			$reader = static function ( string $path ) {
+				return is_readable( $path ) ? file_get_contents( $path ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+			};
+
+			if ( null !== self::sdkFileToShim( $plugins, WP_PLUGIN_DIR, $reader ) && is_file( self::compatFile() ) ) {
+				require_once self::compatFile();
+			}
+		} catch ( \Throwable $e ) {
 			return;
-		}
-		if ( ! apply_filters( 'wallee_ec_enable_sdk_shim', true ) ) {
-			return;
-		}
-
-		$plugins = (array) get_option( 'active_plugins', array() );
-		if ( is_multisite() ) {
-			$plugins = array_merge( $plugins, array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) ) );
-		}
-
-		$reader = static function ( string $path ) {
-			return is_readable( $path ) ? file_get_contents( $path ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-		};
-
-		if ( null !== self::sdkFileToShim( $plugins, WP_PLUGIN_DIR, $reader ) ) {
-			require_once self::compatFile();
 		}
 	}
 
@@ -62,20 +71,27 @@ final class SdkShim {
 	 * @param string[] $active_plugins Active plugin files relative to the plugins directory.
 	 * @param string   $plugins_dir    Plugins base directory.
 	 * @param callable $read_file      Takes a path, returns the contents or false.
-	 * @return string|null Path of the SDK enum file to shim against, or null when no shim is needed.
+	 * @return string|null Path of the SDK enum file to shim against, or null when no shim is needed or the SDK file declares constants our copy does not know.
 	 */
 	public static function sdkFileToShim( array $active_plugins, string $plugins_dir, callable $read_file ): ?string {
 		foreach ( $active_plugins as $plugin ) {
-			$plugin = (string) $plugin;
-			if ( 'wallee.php' !== basename( $plugin ) ) {
+			if ( ! is_string( $plugin ) || 'wallee.php' !== basename( $plugin ) ) {
 				continue;
 			}
-			$path     = rtrim( $plugins_dir, '/' ) . '/' . trim( dirname( $plugin ), './' ) . '/' . self::SDK_FILE;
+			$dir = dirname( $plugin );
+			if ( '.' === $dir || '' === $dir || '/' === $dir[0] || false !== strpbrk( $plugin, "\\\0" ) || in_array( '..', explode( '/', $plugin ), true ) ) {
+				continue;
+			}
+			$path     = rtrim( $plugins_dir, '/' ) . '/' . trim( $dir, '/' ) . '/' . self::SDK_FILE;
 			$contents = $read_file( $path );
-			if ( false === $contents || null === $contents ) {
+			if ( ! is_string( $contents ) ) {
 				continue;
 			}
-			return false === strpos( (string) $contents, self::VALUE ) ? $path : null;
+			if ( false !== strpos( $contents, self::VALUE ) ) {
+				return null;
+			}
+			preg_match_all( '/^\s*const\s+([A-Z0-9_]+)\s*=/m', $contents, $matches );
+			return array() === array_diff( $matches[1], self::KNOWN_CONSTANTS ) ? $path : null;
 		}
 		return null;
 	}

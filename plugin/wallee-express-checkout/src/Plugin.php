@@ -67,7 +67,7 @@ final class Plugin {
 		if ( 'unavailable' === Compat\SdkShim::status() ) {
 			self::notice(
 				'notice-warning',
-				__( "The wallee plugin's SDK cannot read Express Checkout transactions and the compatibility shim could not be loaded.", 'wallee-express-checkout' ),
+				__( "The wallee plugin's SDK cannot read Express Checkout transactions and the compatibility shim is not active.", 'wallee-express-checkout' ),
 				false
 			);
 		}
