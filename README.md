@@ -2,7 +2,9 @@
 
 WooCommerce add-on that shows wallet buttons (wallee Express Checkout) on the cart page and on product pages. It has no credentials of its own and works on top of the wallee main plugin.
 
-**This is a prototype.** It has been built and tested on a staging shop with the Bogus Pay test wallet only. The end-to-end checklist has not been run yet. Not for production.
+**This is a prototype.** It has been built and tested on a staging shop with the Bogus Pay test wallet only. Not for production.
+
+Verified on staging so far (owner's runs with Bogus Pay, orders #25 to #28): cart purchases end on the order-received page; the order goes Pending payment -> On hold (AUTHORIZED webhook) -> Processing (FULFILL); the payment method is resolved to the main plugin's gateway (`wallee_7`); the main plugin's transaction record is linked; addresses and e-mail come from the wallet; the failure path sets the order to Failed; the SDK shim lets the main plugin's webhooks process these transactions. Not yet verified end to end: refunds, completion and void (e2e cases 9, 10), reloads (8, 18), main plugin deactivated (14), session renewal (17) and the background link when the browser never returns (19). See `docs/testing/e2e-checklist.md`.
 
 ## Layout
 

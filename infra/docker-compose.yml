@@ -35,6 +35,8 @@ services:
       retries: 30
 
   wordpress:
+    # Initial core and PHP only: WordPress core lives in the volume and is updated in place
+    # (staging runs WordPress 7.1.5, see docs/testing/e2e-checklist.md).
     image: wordpress:6-php8.2-apache
     restart: unless-stopped
     depends_on:

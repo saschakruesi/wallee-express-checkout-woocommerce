@@ -7,7 +7,11 @@
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
  * WC requires at least: 8.0
+ * WC tested up to:   11.0
  * Text Domain:       wallee-express-checkout
+ * Domain Path:       /languages
+ * License:           GPL-2.0-or-later
+ * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  *
  * @package Wallee\ExpressCheckout
  */
@@ -39,6 +43,13 @@ add_action(
 			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', WALLEE_EC_FILE, true );
 			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', WALLEE_EC_FILE, true );
 		}
+	}
+);
+
+add_action(
+	'init',
+	static function () {
+		load_plugin_textdomain( 'wallee-express-checkout', false, dirname( plugin_basename( WALLEE_EC_FILE ) ) . '/languages' );
 	}
 );
 

@@ -145,3 +145,53 @@ order ID, `payment_method` contains `wallee`).
 - `OrderFactory::create( CartSnapshot $s, ?array $rate, string $uuid, string $wallet ): \WC_Order`
 - `OrderFactory::applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): void`
 - `OrderFactory::fail( \WC_Order $order, string $reason ): void`
+
+## Amendment 2 (owner decisions, 2026-11-24, after the final branch review)
+
+Where this section and the text above disagree, this section wins.
+
+1. **Price edits during the wallet flow** (plan Review Focus 2). The price
+   offered when the buttons loaded applies. A price edit in the shop after
+   that is honoured at the approved price: the order is created from the
+   snapshot and the customer pays what they approved. No refusal, no code
+   change. Stated in readme.txt "Known limits".
+2. **No e-mail address** (replaces "E-mail ... If none exists the order is
+   kept" above, and plan Review Focus 5). In the return handler, after
+   `process`, when the transaction was read and no valid e-mail can be
+   determined (billing, shipping, `customerEmailAddress`, logged-in
+   customer): the order fails (reason `no_email`, private note), the row is
+   `failed`, the customer is not sent to wallee's payment step but to the
+   cart with a generic notice that the wallet provided no e-mail address.
+   If the transaction is then already `AUTHORIZED`, `COMPLETED` or
+   `FULFILL`, the order still fails and gets a prominent private note plus
+   an error log line naming the transaction to void or refund in the
+   wallee portal. A failure to read the transaction is not "no e-mail": the
+   customer goes on to wallee and the data is read later. In the result
+   handler and the background link (the customer may have paid) a missing
+   e-mail keeps the order and adds a private note once.
+3. **Settings location** (replaces design 5.6 "Payments area, own
+   section"). The add-on has its own WooCommerce settings tab
+   "wallee Express Checkout" (id `wallee_ec`), right after the main
+   plugin's "wallee" tab, and a "Settings" link on the Plugins screen. The
+   Payments section is gone.
+4. **Linking every order** (replaces the timing in "Linking to the main
+   plugin"). After `process` an Action Scheduler job
+   (`wallee_ec_link_order`, group `wallee-ec`) links the order with
+   back-off 5, 10, 20, 40, 80, 160 minutes; only then, or once the
+   transaction is in a final authorised or completed state with an
+   unresolvable gateway, the order is flagged with the admin note. The
+   result handler is the fast path; an admin view of any express order
+   still on the provisional gateway retries.
+5. **Session lifetime.** The session endpoint returns `expiresAt` (row
+   `created_at` + 30 minutes, ISO-8601 UTC); the page renews 15 minutes
+   before it and never while the wallet overlay is open. Reuse window 5
+   minutes.
+6. **Rounding fails closed.** A snapshot that does not reproduce the cart
+   total, or line items that do not add up to the snapshot total, give no
+   session (`unavailable`) instead of a shifted line.
+7. **Nothing to ship (temporary).** Buttons are hidden (reason
+   `no_shipping_needed`) when nothing in the cart, or the viewed product or
+   variation, needs shipping, because wallee's sheet currently asks for a
+   shipping address for such sessions and then rejects it. The filter
+   `wallee_ec_allow_without_shipping` (default false) switches them back on
+   once wallee has fixed the sheet.
