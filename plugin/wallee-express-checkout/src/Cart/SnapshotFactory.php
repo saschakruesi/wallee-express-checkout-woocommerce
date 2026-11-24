@@ -17,17 +17,44 @@ defined( 'ABSPATH' ) || exit;
 final class SnapshotFactory {
 
 	/**
+	 * Exception message when the snapshot does not reproduce the cart total.
+	 */
+	const TOTAL_MISMATCH = 'total_mismatch';
+
+	/**
 	 * Snapshot of a live cart.
 	 *
 	 * @param \WC_Cart $cart Cart, normally the customer's session cart.
-	 * @throws \InvalidArgumentException If the snapshot data is invalid.
+	 * @throws \InvalidArgumentException If the snapshot data is invalid, or with message `total_mismatch` if the
+	 *                                   snapshot (lines rounded one by one) differs from WooCommerce's cart total
+	 *                                   without shipping, for example with "round tax at subtotal".
 	 */
 	public function fromCart( \WC_Cart $cart ): CartSnapshot {
 		$cart->calculate_totals();
 
 		$package_count = $cart->needs_shipping() ? count( $cart->get_shipping_packages() ) : 0;
 
-		return $this->build( $cart, CartSnapshot::CONTEXT_CART, $package_count );
+		$snapshot = $this->build( $cart, CartSnapshot::CONTEXT_CART, $package_count );
+		if ( ! self::matchesCartTotal( $snapshot, $cart->get_total( 'edit' ), $cart->get_shipping_total(), $cart->get_shipping_tax() ) ) {
+			throw new \InvalidArgumentException( self::TOTAL_MISMATCH ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Not output.
+		}
+
+		return $snapshot;
+	}
+
+	/**
+	 * Whether the snapshot total equals the cart total without the cart's own
+	 * shipping (the wallet picks shipping), at the currency's precision.
+	 *
+	 * @param CartSnapshot     $snapshot       Snapshot.
+	 * @param int|float|string $cart_total     WooCommerce cart total.
+	 * @param int|float|string $shipping_total Shipping in that total, without tax.
+	 * @param int|float|string $shipping_tax   Shipping tax in that total.
+	 */
+	public static function matchesCartTotal( CartSnapshot $snapshot, $cart_total, $shipping_total, $shipping_tax ): bool {
+		$decimals = Money::decimals( $snapshot->currency() );
+
+		return Money::equals( $snapshot->total(), (float) $cart_total - (float) $shipping_total - (float) $shipping_tax, $decimals );
 	}
 
 	/**

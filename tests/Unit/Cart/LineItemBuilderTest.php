@@ -90,7 +90,7 @@ class LineItemBuilderTest extends TestCase {
 		$this->assertSame( 'PRODUCT', $items[0]['type'] );
 	}
 
-	public function test_rounding_difference_goes_to_the_largest_line() {
+	public function test_rounding_difference_is_refused_not_shifted() {
 		$snapshot = self::snapshot(
 			array(
 				CartSnapshotTest::item(
@@ -117,16 +117,13 @@ class LineItemBuilderTest extends TestCase {
 			)
 		);
 
-		$items = ( new LineItemBuilder() )->build( $snapshot );
-
-		$this->assertCount( 3, $items );
-		$this->assertSame( 3.00, $items[0]['amountIncludingTax'] );
-		$this->assertSame( 5.01, $items[1]['amountIncludingTax'] );
-		$this->assertSame( 1.00, $items[2]['amountIncludingTax'] );
-		$this->assertSame( 9.01, self::sum( $items ) );
+		// Lines 3.00 + 5.00 + 1.00 = 9.00, total 9.012 -> 9.01: one cent would have to move.
+		$this->expectException( \InvalidArgumentException::class );
+		$this->expectExceptionMessage( LineItemBuilder::ROUNDING_MISMATCH );
+		( new LineItemBuilder() )->build( $snapshot );
 	}
 
-	public function test_rounding_difference_can_be_negative() {
+	public function test_negative_rounding_difference_is_refused_too() {
 		$snapshot = self::snapshot(
 			array(
 				CartSnapshotTest::item(
@@ -153,10 +150,31 @@ class LineItemBuilderTest extends TestCase {
 			)
 		);
 
-		$items = ( new LineItemBuilder() )->build( $snapshot );
+		// Lines 2.01 + 1.01 + 4.01 = 7.03, total 7.018 -> 7.02.
+		$this->expectException( \InvalidArgumentException::class );
+		$this->expectExceptionMessage( LineItemBuilder::ROUNDING_MISMATCH );
+		( new LineItemBuilder() )->build( $snapshot );
+	}
 
-		$this->assertSame( 4.00, $items[2]['amountIncludingTax'] );
-		$this->assertSame( 7.02, self::sum( $items ) );
+	public function test_three_decimal_currency_without_remainder_builds() {
+		$snapshot = CartSnapshot::fromArray(
+			CartSnapshotTest::data(
+				array(
+					'currency' => 'KWD',
+					'items'    => array(
+						CartSnapshotTest::item(
+							array(
+								'line_total' => 1.234,
+								'line_tax'   => 0.1,
+							)
+						),
+					),
+				)
+			)
+		);
+
+		$items = ( new LineItemBuilder() )->build( $snapshot );
+		$this->assertSame( 1.334, $items[0]['amountIncludingTax'] );
 	}
 
 	public function test_unique_ids_are_stable_and_distinct() {

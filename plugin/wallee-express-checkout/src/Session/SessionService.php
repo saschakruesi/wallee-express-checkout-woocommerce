@@ -84,6 +84,7 @@ class SessionService {
 	 * @param string       $language Language tag such as de-CH.
 	 * @return array{sessionToken: string, uuid: string}
 	 * @throws \Wallee\ExpressCheckout\Api\ApiException If wallee refuses or is unreachable.
+	 * @throws \InvalidArgumentException From LineItemBuilder (`rounding_mismatch`), before wallee is called.
 	 */
 	public function create( CartSnapshot $snapshot, string $language ): array {
 		$uuid = UrlSigner::newUuid();

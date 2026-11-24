@@ -232,6 +232,9 @@ final class SessionController {
 			$snapshot = $this->snapshotFor( $context, $request );
 			$hash     = $snapshot->hash();
 		} catch ( \InvalidArgumentException $e ) {
+			if ( SnapshotFactory::TOTAL_MISMATCH === $e->getMessage() ) {
+				$adapter->log( 'Session refused: the cart snapshot does not reproduce the cart total (total_mismatch).', 'warning' );
+			}
 			return self::refusal( 'unavailable' );
 		} catch ( \RuntimeException $e ) {
 			return self::refusal( 'unavailable' );
@@ -257,6 +260,10 @@ final class SessionController {
 
 		try {
 			$result = $service->create( $snapshot, str_replace( '_', '-', determine_locale() ) );
+		} catch ( \InvalidArgumentException $e ) {
+			// Line items that do not add up to the total (rounding_mismatch): fail closed, no session.
+			$adapter->log( sprintf( 'Session refused: line items not built (%s).', LineItemBuilder::ROUNDING_MISMATCH === $e->getMessage() ? LineItemBuilder::ROUNDING_MISMATCH : get_class( $e ) ), 'warning' );
+			return self::refusal( 'unavailable' );
 		} catch ( ApiException $e ) {
 			$adapter->log( sprintf( 'Session creation failed (HTTP status %d).', $e->getStatusCode() ), 'error' );
 			return new \WP_REST_Response( array( 'error' => 'unavailable' ), 502 );

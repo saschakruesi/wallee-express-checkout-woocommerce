@@ -115,6 +115,47 @@ class SessionServiceTest extends TestCase {
 		$this->assertArrayHasKey( 'merchantShippingCallbackUrl', $payload );
 	}
 
+	public function test_rounding_mismatch_fails_before_wallee_is_called() {
+		$snapshot = CartSnapshot::fromArray(
+			CartSnapshotTest::data(
+				array(
+					'items' => array(
+						CartSnapshotTest::item(
+							array(
+								'key'        => 'a',
+								'line_total' => 3.004,
+								'line_tax'   => 0.0,
+							)
+						),
+						CartSnapshotTest::item(
+							array(
+								'key'        => 'b',
+								'line_total' => 5.004,
+								'line_tax'   => 0.0,
+							)
+						),
+						CartSnapshotTest::item(
+							array(
+								'key'        => 'c',
+								'line_total' => 1.004,
+								'line_tax'   => 0.0,
+							)
+						),
+					),
+				)
+			)
+		);
+
+		try {
+			$this->service->create( $snapshot, 'de-CH' );
+			$this->fail( 'expected rounding_mismatch' );
+		} catch ( \InvalidArgumentException $e ) {
+			$this->assertSame( 'rounding_mismatch', $e->getMessage() );
+		}
+		$this->assertSame( array(), $this->transport->calls );
+		$this->assertNull( $this->db->last_insert );
+	}
+
 	public function test_payload_without_shipping_callback_for_virtual_snapshot() {
 		$snapshot = CartSnapshot::fromArray(
 			CartSnapshotTest::data(

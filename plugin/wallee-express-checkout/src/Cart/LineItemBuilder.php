@@ -21,10 +21,18 @@ final class LineItemBuilder {
 	const SKU_LENGTH  = 200;
 
 	/**
+	 * Exception message when the rounded lines do not add up to the total.
+	 */
+	const ROUNDING_MISMATCH = 'rounding_mismatch';
+
+	/**
 	 * Builds the line items. Their rounded sum equals the rounded snapshot total.
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
 	 * @return array[] Line items.
+	 * @throws \InvalidArgumentException With message `rounding_mismatch` when the rounded lines do not add up
+	 *                                   to the snapshot total. Shifting the difference onto a line would make
+	 *                                   that line differ from its order item and break the refund mapping.
 	 */
 	public function build( CartSnapshot $snapshot ): array {
 		$decimals = Money::decimals( $snapshot->currency() );
@@ -58,7 +66,9 @@ final class LineItemBuilder {
 			);
 		}
 
-		return $this->absorb_rounding_difference( $lines, Money::round( $snapshot->total(), $decimals ), $decimals );
+		$this->assert_sum( $lines, Money::round( $snapshot->total(), $decimals ), $decimals );
+
+		return $lines;
 	}
 
 	/**
@@ -72,33 +82,22 @@ final class LineItemBuilder {
 	}
 
 	/**
-	 * Adds the difference between the rounded total and the rounded sum to the largest line.
+	 * Fails closed when the rounded lines do not add up to the rounded total.
 	 *
 	 * @param array[] $lines    Line items.
 	 * @param float   $total    Rounded snapshot total.
 	 * @param int     $decimals Decimal places.
-	 * @return array[]
+	 * @throws \InvalidArgumentException With message `rounding_mismatch`.
 	 */
-	private function absorb_rounding_difference( array $lines, float $total, int $decimals ): array {
-		if ( array() === $lines ) {
-			return $lines;
-		}
-
-		$sum     = 0.0;
-		$largest = 0;
-		foreach ( $lines as $index => $line ) {
+	private function assert_sum( array $lines, float $total, int $decimals ): void {
+		$sum = 0.0;
+		foreach ( $lines as $line ) {
 			$sum += $line['amountIncludingTax'];
-			if ( $line['amountIncludingTax'] > $lines[ $largest ]['amountIncludingTax'] ) {
-				$largest = $index;
-			}
 		}
 
-		$difference = Money::round( $total - $sum, $decimals );
-		if ( ! Money::equals( $difference, 0, $decimals ) ) {
-			$lines[ $largest ]['amountIncludingTax'] = Money::round( $lines[ $largest ]['amountIncludingTax'] + $difference, $decimals );
+		if ( ! Money::equals( $sum, $total, $decimals ) ) {
+			throw new \InvalidArgumentException( self::ROUNDING_MISMATCH ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Not output.
 		}
-
-		return $lines;
 	}
 
 	/**
