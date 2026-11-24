@@ -23,6 +23,16 @@ require_once WALLEE_EC_PATH . 'src/Autoloader.php';
 \Wallee\ExpressCheckout\Autoloader::register( WALLEE_EC_PATH . 'src' );
 
 add_action(
+	'before_woocommerce_init',
+	static function () {
+		if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
+			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', WALLEE_EC_FILE, true );
+			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', WALLEE_EC_FILE, true );
+		}
+	}
+);
+
+add_action(
 	'plugins_loaded',
 	static function () {
 		if ( class_exists( '\Wallee\ExpressCheckout\Plugin' ) ) {
