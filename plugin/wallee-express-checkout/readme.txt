@@ -2,7 +2,7 @@
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.1
+Stable tag: 1.0.0
 Requires Plugins: woocommerce
 License: Apache-2.0
 
@@ -44,7 +44,7 @@ All settings are on WooCommerce > Settings > wallee Express Checkout.
 
 == Security ==
 
-Version 0.1.1 fixes weaknesses found in a security review of 0.1.0. Update from 0.1.0; there are no settings to migrate. What changed is listed under "Known limits" and in the changelog. Points to check after updating:
+Version 1.0.0 fixes weaknesses found in a security review of 0.1.0. Update from 0.1.0; there are no settings to migrate (the add-on adds its rate-limit table by itself on the first request after the update). What changed is listed under "Known limits" and in the changelog. Points to check after updating:
 
 * Environment: keep Test only on test shops (see Settings).
 * Rate limiting identifies a client by `REMOTE_ADDR`. If the shop sits behind a reverse proxy or CDN, every request appears to come from the proxy. Return the visitor's address from a header your proxy sets and the visitor cannot forge, with the filter `wallee_ec_client_ip`, for example in a must-use plugin: `add_filter( 'wallee_ec_client_ip', function ( $ip ) { /* read the trusted header, validate it, else return $ip */ } );`. Values that are not IP addresses are ignored.
@@ -78,7 +78,7 @@ Version 0.1.1 fixes weaknesses found in a security review of 0.1.0. Update from 
 * Stock is checked again after approval. If an item became unavailable, no payment is started and the customer returns to the cart.
 * Compatibility shim: the SDK bundled in wallee plugin 3.4.11 rejects transactions of the user interface type `EXPRESS_CHECKOUT`, which would break the main plugin's webhook handling for these orders. The add-on therefore loads a copy of that one SDK enum class with the extra value. It does this only if the main plugin's SDK file lacks the value, so it switches itself off when the main plugin ships a newer SDK. A filter `wallee_ec_enable_sdk_shim` (return false) turns it off; express checkout is then disabled (no buttons, admin notice), because the main plugin's webhooks for these transactions would fail. A customer who returns from the wallet while the shim is unavailable is sent back to the cart with "Express checkout is currently not available. You have not been charged. Please use the regular checkout."; no order is created and no payment is started. The proper fix belongs in the main plugin.
 * Newer main plugin versions than 3.4.11 run with an admin warning until tested.
-* Not yet done (planned follow-ups): a personal-data exporter and eraser for the add-on's session table (rows are deleted after 7 days), atomic rate-limit counters, and Subresource Integrity for wallee's script. Prices: the price approved in the wallet applies even if the shop price changed during the wallet flow (owner decision).
+* wallee's handler script (`/assets/payment/express-checkout-handler.js` on the wallee host) is loaded without Subresource Integrity: wallee publishes it only at this fixed, unversioned URL whose content changes with wallee's releases, so a pinned hash would switch the buttons off at wallee's next update.
 
 == Privacy ==
 
@@ -99,7 +99,7 @@ Each host name (with and without `www`) is registered separately. Apple Pay is n
 
 == Changelog ==
 
-= 0.1.1 =
+= 1.0.0 =
 * Security fixes: validation of product variation data, environment check, coupon re-validation, destination and tax location checks, rate limiting, link lifetime; staging hardening.
 * Fix: wallets that complete the payment themselves (PayPal) no longer fail a paid order. wallee's redirect after the payment start is followed only to the wallee host or to the add-on's own result links; otherwise the customer goes to the add-on's success link. An order whose money is already reserved or taken fails only for a missing e-mail, an invalid coupon or a changed destination (with an ACTION REQUIRED note), never for a technical reason.
 * Customer messages say what happened, whether the customer was charged and what to do next.
@@ -111,6 +111,13 @@ Each host name (with and without `www`) is registered separately. Apple Pay is n
 * An error thrown by a third-party validation hook now hides the buttons instead of causing a server error.
 * Orders that fail for a missing e-mail, an invalid coupon or a changed destination: a reserved amount (AUTHORIZED) is voided automatically once; taken money gets an ACTION REQUIRED note that a refund is needed; a failed order revived by a later payment update gets an ACTION REQUIRED note.
 * The tax destination check compares WooCommerce's tax rates for the address with those of the tax location (state, postcode and city rates; billing address when taxes follow it) instead of the country.
+* Privacy: personal data exporter and eraser for the add-on's session records and order meta, and a suggested privacy policy text.
+* Rate limits are counted atomically in the add-on's own table.
+* A return from the wallet is refused (no order, no payment) while the SDK compatibility shim is unavailable.
+* A refused repeat of an unclear payment start no longer fails the order when wallee shows that the first call went through.
+* Background link job: a transaction that ended FAILED, DECLINE or VOIDED gets one clear note and ends the retries; an error in one attempt is logged and retried; a payment authorised after the browser left without an e-mail address fails the order like at the return (void or refund note).
+* "Express TEST" badge for test orders in the order list and on the order edit screen.
+* Session renewal no longer depends on the browser's clock and also runs after the customer cancels the wallet.
 
 = 0.1.0 =
 * Fix wave after the branch review: background linking of every order, robust handling of unclear process answers, orders without e-mail fail before payment, own settings tab, session renewal from the real expiry, fail-closed rounding check, buttons off without the SDK shim or without shippable items.

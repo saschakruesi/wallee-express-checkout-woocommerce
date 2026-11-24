@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       wallee Express Checkout
  * Description:       Express checkout buttons for WooCommerce, powered by wallee.
- * Version:           0.1.1
+ * Version:           1.0.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -18,7 +18,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WALLEE_EC_VERSION', '0.1.1' );
+define( 'WALLEE_EC_VERSION', '1.0.0' );
 define( 'WALLEE_EC_FILE', __FILE__ );
 define( 'WALLEE_EC_PATH', plugin_dir_path( __FILE__ ) );
 

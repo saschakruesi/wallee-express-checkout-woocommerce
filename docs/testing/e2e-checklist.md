@@ -10,7 +10,7 @@ A tester runs each case by hand and fills in the result row. The result rows are
 | WordPress | 7.1.5 (read from the staging shop with `infra/bin/wp core version`), PHP 8.2 |
 | WooCommerce | 11.0.1 |
 | wallee main plugin | 3.4.11 |
-| wallee Express Checkout | 0.1.1, branch `prototype`, deployed with `infra/bin/deploy` |
+| wallee Express Checkout | 1.0.0, branch `prototype`, deployed with `infra/bin/deploy` |
 | Wallet | Bogus Pay (Test) |
 | Space | wallee test space, environment TEST (setting "Environment" = Test) |
 
@@ -166,8 +166,8 @@ Expect: (a) the order succeeds with the coupon. (b) after approval the browser r
 | | | | |
 
 ### 17. Session renewal
-Steps: (a) open the cart page with a Notebook in the cart and leave it open untouched for at least 20 minutes (a wallee session expires 30 minutes after creation; the session endpoint returns `expiresAt` and the page renews 15 minutes before it, so after about 15 minutes). Then click the wallet button and run the standard approval. (b) Load the cart page, wait 4 minutes, reload it (the token is reused, with its original `expiresAt`), wait another 12 minutes, then pay. (c) Open the wallet sheet about 14 minutes after loading the page and keep it open past the 15-minute mark before approving.
-Expect: (a) and (b): buttons are still present and the payment succeeds as in case 1; no "expired" notice. (c): the open sheet is not removed; the renewal happens after the sheet closes; the approval succeeds.
+Steps: (a) open the cart page with a Notebook in the cart and leave it open untouched for at least 20 minutes (a wallee session expires 30 minutes after creation; the session endpoint returns `expiresIn`, the seconds left, and the page renews 15 minutes before the end, so after about 15 minutes). Then click the wallet button and run the standard approval. (b) Load the cart page, wait 4 minutes, reload it (the token is reused; `expiresIn` is then about 26 minutes), wait another 12 minutes, then pay. (c) Open the wallet sheet about 14 minutes after loading the page and keep it open past the 15-minute mark before approving. (d) As (c), but cancel the sheet after the 15-minute mark instead of approving. (e) Set the computer's clock 2 hours ahead (or behind), load the cart page and watch the network tab: the next session request comes after about 15 minutes, not at once and not later; set the clock back afterwards.
+Expect: (a) and (b): buttons are still present and the payment succeeds as in case 1; no "expired" notice. (c): the open sheet is not removed; the renewal happens after the sheet closes; the approval succeeds. (d): a new session request is sent right after the cancel; the buttons stay. (e): renewal timing unaffected by the clock.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -183,7 +183,7 @@ Expect: the same order-received page of the same order; no second order, the car
 
 ### 19. Browser never returns after payment
 Steps: Notebook in the cart, wallet button, approve, complete the 3-D Secure step and close the tab before the order-received page loads (or before the 3-D Secure redirect finishes). Wait 10 minutes.
-Expect: the order is linked by the background job (WooCommerce > Status > Scheduled Actions, hook `wallee_ec_link_order`, group `wallee-ec`): payment method `wallee_7` (not "wallee Express Checkout"), transaction shown, addresses and e-mail set; the refund button works. If it is not linked after the last attempt (about 5 hours), the order has a private note to use the wallee portal.
+Expect: the order is linked by the background job (WooCommerce > Status > Scheduled Actions, hook `wallee_ec_link_order`, group `wallee-ec`): payment method `wallee_7` (not "wallee Express Checkout"), transaction shown, addresses and e-mail set; the refund button works. If it is not linked after the last attempt (about 5 hours), the order has a private note to use the wallee portal. Variant: close the tab in the 3-D Secure step after choosing the failing outcome; the background job then adds one note "wallee Express Checkout: wallee transaction N ended in state FAILED, so no money was taken for this order. ...", no "complete and refund in the wallee portal" note, and schedules no further attempt (log: `ended in state FAILED; not linked`).
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -191,7 +191,7 @@ Expect: the order is linked by the background job (WooCommerce > Status > Schedu
 
 ### 20. No e-mail from the wallet
 Steps: only testable with a wallet that returns no e-mail address (Bogus Pay always returns one: then record "not testable").
-Expect: after approval the customer returns to the cart with the notice "The wallet did not provide an e-mail address, which we need for your order. You have not been charged. Please use the regular checkout." (if the transaction was already authorised, completed or fulfilled: "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."); the order is `Failed` with reason `no_email`; the customer is not sent to the payment step. If the transaction was already authorised, the order has an "ACTION REQUIRED" note and the log an error naming the transaction to void or refund in the wallee portal.
+Expect: after approval the customer returns to the cart with the notice "The wallet did not provide an e-mail address, which we need for your order. You have not been charged. Please use the regular checkout." (if the transaction was already authorised, completed or fulfilled: "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."); the order is `Failed` with reason `no_email`; the customer is not sent to the payment step. If the transaction was already authorised, the reservation is voided automatically (note as in case 28; if the void fails, an "ACTION REQUIRED" note); if it was completed or fulfilled, an "ACTION REQUIRED ... A refund is needed" note. Background variant (transaction not readable at return, browser closed after the payment step): the background job fails the order for `no_email` the same way (log: `no e-mail address from wallee (transaction T, state S); order failed (no_email)`).
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -199,7 +199,7 @@ Expect: after approval the customer returns to the cart with the notice "The wal
 
 ### 21. SDK shim switched off
 Steps: add an mu-plugin with `add_filter( 'wallee_ec_enable_sdk_shim', '__return_false' );` (only on a test shop the owner agrees to change). Visit the admin, the cart and a product page. Remove the mu-plugin afterwards.
-Expect: admin error notice that express checkout is disabled because the shim is not active; status line "SDK compatibility shim: unavailable"; no buttons; the session endpoint answers `reason: not_configured`.
+Expect: admin error notice that express checkout is disabled because the shim is not active; status line "SDK compatibility shim: unavailable"; no buttons; the session endpoint answers `reason: not_configured`. Variant: open a wallet sheet before adding the mu-plugin, add it, then approve: the customer returns to the cart with "Express checkout is currently not available. You have not been charged. Please use the regular checkout."; no order is created, no payment is started (log: `express checkout is not available (main plugin or SDK compatibility shim); session not processed`).
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -207,7 +207,7 @@ Expect: admin error notice that express checkout is disabled because the shim is
 
 ### 22. TEST environment notice and order note
 Steps: Environment Test, at least one of "Cart page" / "Product pages" ticked. Open any admin page as a shop manager, then complete case 1.
-Expect: a yellow notice on every admin page, without a dismiss button: "wallee Express Checkout runs in the TEST environment. Payments are simulated; do not ship goods for these orders." The new order has the private note "Test payment (wallee Express Checkout TEST environment). No real money was moved." and the meta `_wallee_ec_environment` = `TEST`; its payment method title is unchanged. Untick both display switches: the admin notice disappears (tick them again afterwards).
+Expect: a yellow notice on every admin page, without a dismiss button: "wallee Express Checkout runs in the TEST environment. Payments are simulated; do not ship goods for these orders." The new order has the private note "Test payment (wallee Express Checkout TEST environment). No real money was moved." and the meta `_wallee_ec_environment` = `TEST`; its payment method title is unchanged. WooCommerce > Orders shows a column "Express checkout" next to the status with the badge "Express TEST" for this order (check with HPOS on and, if possible, with the legacy posts storage); the order edit screen shows the badge with "Test payment in the wallee TEST environment. No real money was moved. Do not ship this order." Express orders of the Production environment show "Express" in the column; other orders show nothing. Untick both display switches: the admin notice disappears (tick them again afterwards).
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -277,6 +277,22 @@ Expect: if the main plugin's webhook moved the order out of `Failed` (to on-hold
 |---|---|---|---|
 | | | | |
 
+### 31. Personal data export and erasure
+Steps: after case 1 (guest, wallet e-mail E) and case 7: Tools > Export Personal Data, add a request for E and use the request's "Download personal data" action. Then Tools > Erase Personal Data for E, run "Erase personal data". Also open Settings > Privacy > Policy Guide.
+Expect: the export contains a group "wallee Express Checkout sessions" (one item per session record of these orders: order, created, state, wallee IDs, tax location, delivery destination) and "wallee Express Checkout order data" (wallet, environment, wallee IDs, failure reason if any). The erasure reports the finished records as removed; a record of an order whose payment is still in progress is reported as retained with a message naming the order. The orders themselves are not deleted by the add-on. The Policy Guide has a "wallee Express Checkout" section.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 32. Rate limit under parallel requests
+Steps: from one client, send 30 session requests in parallel within a few seconds (for example with a small script reusing the nonces of the cart page). Then check the table: `infra/bin/wp db query "SELECT COUNT(*) FROM wp_wallee_ec_rate"`.
+Expect: exactly 20 requests get a session or a normal refusal; the rest get HTTP 429 with `rate_limited`; the table has a row per bucket; after the daily cleanup expired rows are gone.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
 ## How to diagnose a failed run
 
 Add-on log: WooCommerce > Status > Logs, source `wallee-express-checkout` (newest file by date). It holds IDs, states and reason codes only: no addresses, e-mails or credentials. Typical lines: `Created express checkout session ...`, `Return: session row N created -> ordering`, `... processed for order N`, `Result: success for session row N ...`, `Order N: linked to transaction T, gateway ...`, `Order N: link attempt K failed, next in M minutes.` Background link attempts: WooCommerce > Status > Scheduled Actions, hook `wallee_ec_link_order`.
@@ -297,7 +313,7 @@ Reason codes after `rejected:` (no order, no charge) or `failed:` (order set to 
 | `validation_error (Class)` | Exception while validating. |
 | `order_creation_failed (Class)` | The order could not be created. |
 | `session_update_failed` | The add-on's own session row could not be updated (order failed). |
-| `process_failed (Class HTTP n ...)` | wallee refused the `process` call (4xx), or the answer was unclear and the session did not move after one retry (order failed). An unclear answer with the session already `PROCESSING`/`AUTHORIZED` is logged as `probably processed` and the order is kept. |
+| `process_failed (Class HTTP n ...)` | wallee refused the first `process` call (4xx), or the answer was unclear and the session did not move after one retry (order failed). An unclear answer with the session already `PROCESSING`/`AUTHORIZED` is logged as `probably processed` and the order is kept; so is a 4xx answer to the retry when the session then has a transaction or is `PROCESSING`/`AUTHORIZED` (log: `process attempt 2 refused (...); reading the session`). |
 | `order_update_failed (Class)` | The order could not be marked before the process call (order failed). |
 | `no_email` | After process, wallee returned no e-mail address (order failed; see case 20). |
 | `destination_changed` | After process, the wallet's address is in another country than the shipping quote, or the address taxes are based on (shipping, or billing when taxes follow it) has other tax rates than the tax location (order failed). |
@@ -307,10 +323,10 @@ Reason codes after `rejected:` (no order, no charge) or `failed:` (order set to 
 
 Each return logs `redirect target: wallee`, `shop` or `other:<host>` (host only).
 
-Customer notices (cart page) by reason: expired session or link: "Your express payment session has expired. ..."; destination (`shipping_missing`, `shipping_changed`, `destination_changed`): "Express checkout is not available for deliveries to <country>. ..." or "... for the selected delivery address. ..."; `out_of_stock`; `coupon_invalid`; cart changed (`amount_mismatch`, `tax_rate_changed`, `order_creation_failed`, `currency_mismatch`, rounding): "Your cart changed while you were paying. ..."; `no_email`; failure URL: "The payment was not completed. ..."; anything else: "The express payment could not be completed because of a technical problem. ...". The middle sentence is "You have not been charged." only where no payment can have happened; where that is not certain it is "If an amount was reserved, it will be released." With the money only reserved and the void requested the middle sentence is "The reservation on your payment method is being released. You will not be charged." With the money taken (or a failed void) the notice is "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."
+Customer notices (cart page) by reason: expired session or link: "Your express payment session has expired. ..."; destination (`shipping_missing`, `shipping_changed`, `destination_changed`): "Express checkout is not available for deliveries to <country>. ..." or "... for the selected delivery address. ..."; `out_of_stock`; `coupon_invalid`; cart changed (`amount_mismatch`, `tax_rate_changed`, `order_creation_failed`, `currency_mismatch`, rounding): "Your cart changed while you were paying. ..."; `no_email`; failure URL: "The payment was not completed. ..."; SDK shim unavailable at return (`express_unavailable`): "Express checkout is currently not available. You have not been charged. Please use the regular checkout."; anything else: "The express payment could not be completed because of a technical problem. ...". The middle sentence is "You have not been charged." only where no payment can have happened; where that is not certain it is "If an amount was reserved, it will be released." With the money only reserved and the void requested the middle sentence is "The reservation on your payment method is being released. You will not be charged." With the money taken (or a failed void) the notice is "Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order N."
 
 Session endpoint refusals (`reason` in the response, no buttons): `disabled`, `not_configured` (main plugin not configured or SDK shim unavailable), `empty`, `no_shipping_needed`, `subscription`, `multiple_packages`, `guest_checkout_disabled`, `unavailable` (snapshot not buildable; logged as `total_mismatch` or `rounding_mismatch` when the amounts would not add up to the cart total).
 
-Other signals: `Return: invalid or missing signature` / `unknown session` (a tampered or foreign return URL); `Session creation failed (HTTP status N)` (wallee API refused, check credentials in the main plugin and run Configure); `transaction details not read` (the shim or the API; the result handler and the background job retry); `gateway of transaction T unresolved` (order keeps the generic payment method and a note). The shipping callback answers the wallet with `COUNTRY_UNAVAILABLE` or `SHIPPING_METHOD_UNAVAILABLE` when no rate fits.
+Other signals: `Return: invalid or missing signature` / `unknown session` (a tampered or foreign return URL); `Session creation failed (HTTP status N)` (wallee API refused, check credentials in the main plugin and run Configure); `transaction details not read` (the shim or the API; the result handler and the background job retry); `link attempt K stopped by an error (Class)` (an unexpected error in the background job; the next attempt is scheduled); `link attempt counter not saved` (the job stops; check the database); `transaction T ended in state S; not linked` (no money taken, job ended); `gateway of transaction T unresolved` (order keeps the generic payment method and a note). The shipping callback answers the wallet with `COUNTRY_UNAVAILABLE` or `SHIPPING_METHOD_UNAVAILABLE` when no rate fits.
 
 SDK shim status: WooCommerce > Settings > wallee Express Checkout > Status, line "SDK compatibility shim": `active` (the add-on's copy is loaded), `not needed` (the main plugin's SDK knows `EXPRESS_CHECKOUT`) or `unavailable` (the main plugin cannot read Express Checkout transactions; express checkout is disabled and an error notice shows in the admin). Also check the main plugin's own log and wallee portal > Transactions for the transaction state.
