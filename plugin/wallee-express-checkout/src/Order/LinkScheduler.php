@@ -246,7 +246,7 @@ final class LinkScheduler {
 	 * @param mixed $order Order passed by the hook.
 	 */
 	public function retryNow( $order ): void {
-		if ( $order instanceof \WC_Order && self::awaitsLink( $order ) ) {
+		if ( $order instanceof \WC_Order && self::awaitsLink( $order ) && ! OrderLinker::paymentEnded( $order ) ) {
 			$this->resolve( $order, false );
 		}
 	}

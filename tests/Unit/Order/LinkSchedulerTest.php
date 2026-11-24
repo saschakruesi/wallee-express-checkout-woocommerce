@@ -309,7 +309,8 @@ class LinkSchedulerTest extends TestCase {
 		$this->scheduler()->run( 501 );
 
 		$this->assertSame( array(), $this->scheduled, 'no further attempt' );
-		$this->assertSame( array( 629017977 ), $this->adapter->reads, 'the second run reads nothing' );
+		$this->scheduler()->retryNow( $this->order );
+		$this->assertSame( array( 629017977 ), $this->adapter->reads, 'neither the second run nor an admin view reads again' );
 		$this->assertCount( 1, $this->order->notes );
 		$this->assertStringContainsString( 'ended in state FAILED, so no money was taken', $this->order->notes[0] );
 		$this->assertSame( '', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
