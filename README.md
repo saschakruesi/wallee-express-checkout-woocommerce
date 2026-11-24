@@ -116,7 +116,7 @@ The add-on sends cart line items, amounts and the currency to wallee's API and l
 
 ## Security
 
-Please report vulnerabilities privately to the repository owner ([@saschakruesi](https://github.com/saschakruesi)) rather than in a public issue. Version 0.1.0 has known weaknesses that 1.0.0 fixes; do not use 0.1.0.
+Please report vulnerabilities privately through [GitHub's vulnerability reporting](https://github.com/saschakruesi/wallee-express-checkout-woocommerce/security/advisories/new) rather than in a public issue. Version 0.1.0 has known weaknesses that 1.0.0 fixes; do not use 0.1.0.
 
 ## Documentation
 
