@@ -87,6 +87,21 @@ class SessionRepositoryTest extends TestCase {
 		$this->assertCount( 1, $this->db->queries );
 	}
 
+	public function test_claim_trusts_the_query_result_not_a_later_rows_affected() {
+		$db = new class() extends FakeWpdb {
+			public $result = 1;
+			public function query( $query ) {
+				$this->queries[]     = $query;
+				$this->rows_affected = 0;
+				return $this->result;
+			}
+		};
+
+		$this->assertTrue( ( new SessionRepository( $db ) )->claim( 7, 'created', 'ordering' ) );
+		$db->result = false;
+		$this->assertFalse( ( new SessionRepository( $db ) )->claim( 7, 'created', 'ordering' ) );
+	}
+
 	public function test_claim_rejects_unknown_states_without_querying() {
 		$this->expectException( \InvalidArgumentException::class );
 		try {

@@ -14,8 +14,10 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Reads and writes the session table. `claim()` is the guard against creating
  * two orders for one wallet approval.
+ *
+ * Not final so that unit tests of the handlers can use an in-memory double.
  */
-final class SessionRepository {
+class SessionRepository {
 
 	const TABLE = 'wallee_ec_session';
 
@@ -146,7 +148,10 @@ final class SessionRepository {
 		self::assert_state( $to );
 
 		$table = $this->table();
-		$this->db->query(
+
+		// The statement's own result (affected rows, false on error), not a
+		// later read of rows_affected that another query could have changed.
+		return 1 === (int) $this->db->query(
 			$this->db->prepare(
 				"UPDATE {$table} SET state = %s, updated_at = %s WHERE id = %d AND state = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is the prefix plus a constant.
 				$to,
@@ -155,8 +160,6 @@ final class SessionRepository {
 				$from
 			)
 		);
-
-		return 1 === (int) $this->db->rows_affected;
 	}
 
 	/**

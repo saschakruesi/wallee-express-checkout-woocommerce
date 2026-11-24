@@ -116,10 +116,13 @@ final class Plugin {
 		Http\SessionController::register();
 		Http\ShippingController::register();
 		Http\DomainAssociation::register();
+		Http\ReturnHandler::register();
+		Http\ResultHandler::register();
 		Frontend\CartButtons::register();
 		Frontend\ProductButtons::register();
 		if ( is_admin() ) {
 			Admin\Settings::register();
+			Order\OrderLinker::register();
 		}
 	}
 
