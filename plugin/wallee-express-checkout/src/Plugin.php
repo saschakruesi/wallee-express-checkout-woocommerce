@@ -120,9 +120,10 @@ final class Plugin {
 		Http\ResultHandler::register();
 		Frontend\CartButtons::register();
 		Frontend\ProductButtons::register();
+		Order\LinkScheduler::register();
+		add_filter( 'woocommerce_cancel_unpaid_order', array( Order\OrderFactory::class, 'cancelUnpaid' ), 10, 2 );
 		if ( is_admin() ) {
 			Admin\Settings::register();
-			Order\OrderLinker::register();
 		}
 	}
 

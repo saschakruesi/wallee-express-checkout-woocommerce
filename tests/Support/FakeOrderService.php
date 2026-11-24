@@ -92,21 +92,24 @@ class FakeOrderService extends OrderService {
 	/**
 	 * {@inheritDoc}
 	 *
-	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param array|null   $rate     Rate.
-	 * @param string       $uuid     UUID.
-	 * @param string       $wallet   Wallet.
+	 * @param CartSnapshot $snapshot   Snapshot.
+	 * @param array|null   $rate       Rate.
+	 * @param string       $uuid       UUID.
+	 * @param string       $wallet     Wallet.
+	 * @param int          $session_id wallee session ID.
 	 * @throws \Throwable The scripted error.
 	 */
-	public function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet ): \WC_Order {
-		$this->created[] = array( $snapshot, $rate, $uuid, $wallet );
+	public function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet, int $session_id ): \WC_Order {
+		$this->created[] = array( $snapshot, $rate, $uuid, $wallet, $session_id );
 		if ( null !== $this->create_error ) {
 			throw $this->create_error;
 		}
 		$total = null !== $this->next_total ? $this->next_total : $snapshot->total() + ( null === $rate ? 0 : $rate['cost'] + $rate['tax'] );
 		$order = new \WC_Order( $this->next_id, round( $total, 2 ) );
 
-		$this->orders[ $order->get_id() ] = $order;
+		$order->meta['_wallee_ec_session_uuid'] = $uuid;
+		$order->meta['_wallee_ec_session_id']   = $session_id;
+		$this->orders[ $order->get_id() ]        = $order;
 
 		return $order;
 	}
@@ -130,9 +133,23 @@ class FakeOrderService extends OrderService {
 	 * @param int         $customer_id   Customer.
 	 * @param string|null $quote_country Country.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): void {
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
 		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id, $quote_country );
 		$order->billing_email = $this->applied_email;
+
+		return '' !== $this->applied_email;
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param \WC_Order $order Order.
+	 * @param string    $note  Note.
+	 */
+	public function addNoteOnce( \WC_Order $order, string $note ): void {
+		if ( ! in_array( $note, $order->notes, true ) ) {
+			$order->add_order_note( $note );
+		}
 	}
 
 	/**

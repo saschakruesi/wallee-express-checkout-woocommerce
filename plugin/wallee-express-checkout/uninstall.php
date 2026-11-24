@@ -25,3 +25,8 @@ $wpdb->query(
 );
 
 wp_clear_scheduled_hook( 'wallee_ec_cleanup' );
+
+// Pending background links of orders (Action Scheduler, bundled with WooCommerce).
+if ( function_exists( 'as_unschedule_all_actions' ) ) {
+	as_unschedule_all_actions( 'wallee_ec_link_order', array(), 'wallee-ec' );
+}

@@ -45,6 +45,9 @@ class ReturnHandlerTest extends TestCase {
 	/** @var string[] */
 	private $logs = array();
 
+	/** @var int[] Order IDs the background link was scheduled for. */
+	private $scheduled = array();
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
@@ -66,6 +69,7 @@ class ReturnHandlerTest extends TestCase {
 
 		$this->notices    = array();
 		$this->logs       = array();
+		$this->scheduled  = array();
 		$this->repository = new FakeSessionRepository(
 			CartSnapshotTest::data(),
 			array( 'shipping_quote' => self::quote() )
@@ -76,6 +80,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->api->sessions    = array( self::approved(), self::processing() );
 		$this->api->transaction = array(
 			'id'              => 629017977,
+			'state'           => 'PROCESSING',
 			'shippingAddress' => array( 'country' => 'CH' ),
 		);
 	}
@@ -151,6 +156,10 @@ class ReturnHandlerTest extends TestCase {
 			$this->api,
 			$this->orders,
 			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
+			function ( $order_id ) {
+				$this->scheduled[] = $order_id;
+				return true;
+			},
 			$log
 		);
 	}
@@ -175,6 +184,9 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'flat_rate:1', $this->orders->created[0][1]['id'] );
 		$this->assertSame( self::UUID, $this->orders->created[0][2] );
 		$this->assertSame( 'Bogus Pay (Test)', $this->orders->created[0][3] );
+		$this->assertSame( 335, $this->orders->created[0][4], 'wallee session ID stored with the order' );
+		$this->assertNotSame( '', $this->orders->orders[501]->get_meta( '_wallee_ec_process_started' ) );
+		$this->assertSame( array( 501 ), $this->scheduled, 'background link scheduled' );
 
 		$process = $this->api->calls[1];
 		$this->assertSame( 'processSession', $process[0] );
@@ -280,6 +292,8 @@ class ReturnHandlerTest extends TestCase {
 			$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
 		}
 		$this->assertCount( 2, $this->notices );
+		$this->assertStringNotContainsString( 'already being processed', $this->notices[0] );
+		$this->assertSame( 'error: Your express payment is already being processed.', $this->notices[1] );
 		$this->assertSame( array(), $this->api->calls );
 	}
 
@@ -303,6 +317,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
 		$this->assertNothingCreated();
 		$this->assertSame( 'ordering', $this->repository->row['state'] );
+		$this->assertSame( array( 'error: Your express payment is already being processed.' ), $this->notices );
 	}
 
 	public function test_session_not_approved_fails_row_with_expiry_notice() {
@@ -388,15 +403,142 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertNotContains( 'processSession', $this->api->methods() );
 	}
 
-	public function test_process_error_fails_order_and_returns_cart() {
-		$this->api->process = new ApiException( 'wallee API returned an invalid redirect URL.' );
+	public function test_clear_process_refusal_fails_order_without_reread() {
+		$this->api->process = new ApiException( 'refused', 422 );
 
 		$url = $this->handler()->handle( $this->query() );
 
 		$this->assertSame( self::CART, $url );
 		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array( 'getSession', 'processSession' ), $this->api->methods() );
 		$this->assertCount( 1, $this->notices );
+		$this->assertSame( array(), $this->scheduled );
+	}
+
+	/**
+	 * @dataProvider uncertain_errors
+	 *
+	 * @param \Throwable $error Error thrown by process.
+	 */
+	public function test_uncertain_process_error_with_processing_session_keeps_the_order( \Throwable $error ) {
+		$this->api->process = $error;
+
+		$url = $this->handler()->handle( $this->query() );
+
+		$this->assertSame( self::RECEIVED, $url, 'no redirect URL: order received page' );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( array( 'getSession', 'processSession', 'getSession', 'getSession', 'getTransaction' ), $this->api->methods() );
+		$this->assertSame( 629017977, $this->orders->orders[501]->get_meta( '_wallee_ec_transaction_id' ) );
+		$this->assertSame( array( 501 ), $this->scheduled );
+		$this->assertSame( array(), $this->notices );
+	}
+
+	public function uncertain_errors(): array {
+		return array(
+			'no status'        => array( new ApiException( 'timeout' ) ),
+			'server error'     => array( new ApiException( 'bad gateway', 502 ) ),
+			'invalid response' => array( new ApiException( 'wallee API returned an invalid redirect URL.' ) ),
+			'other throwable'  => array( new \RuntimeException( 'socket' ) ),
+		);
+	}
+
+	public function test_uncertain_process_error_with_authorized_session_keeps_the_order() {
+		$this->api->process  = new ApiException( 'timeout' );
+		$this->api->sessions = array( self::approved(), self::approved( array( 'state' => 'AUTHORIZED' ) ), self::processing() );
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+	}
+
+	public function test_uncertain_process_error_with_approved_session_retries_process_once() {
+		$this->api->process  = array( new ApiException( 'timeout' ), self::WALLEE );
+		$this->api->sessions = array( self::approved(), self::approved(), self::processing() );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 'getSession', 'processSession', 'getSession', 'processSession', 'getSession', 'getTransaction' ), $this->api->methods() );
+		$this->assertSame( '501', $this->api->calls[3][2], 'same merchant reference' );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+	}
+
+	public function test_session_still_approved_after_the_retry_fails_the_order() {
+		$this->api->process  = new ApiException( 'down', 503 );
+		$this->api->sessions = array( self::approved() );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
+		$this->assertSame( 2, count( array_keys( $this->api->methods(), 'processSession', true ) ) );
+		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertStringContainsString( 'session APPROVED', implode( "\n", $this->logs ) );
+	}
+
+	public function test_failed_session_after_uncertain_error_fails_without_retry() {
+		$this->api->process  = new ApiException( 'timeout' );
+		$this->api->sessions = array( self::approved(), self::approved( array( 'state' => 'FAILED' ) ) );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
+		$this->assertSame( 1, count( array_keys( $this->api->methods(), 'processSession', true ) ) );
+	}
+
+	public function test_unreadable_session_after_uncertain_error_fails_the_order() {
+		$this->api->process  = new ApiException( 'timeout' );
+		$this->api->sessions = array( self::approved(), new ApiException( 'down', 503 ) );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'process_failed' ), $this->orders->failed );
+		$this->assertStringContainsString( 'session unreadable', implode( "\n", $this->logs ) );
+	}
+
+	public function test_no_email_fails_the_order_and_does_not_send_the_customer_to_wallee() {
+		$this->orders->applied_email = '';
+
+		$url = $this->handler()->handle( $this->query() );
+
+		$this->assertSame( self::CART, $url );
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array(), $this->scheduled );
+		$this->assertNull( $this->handler()->externalHost() );
+		$this->assertSame( array( 'error: Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.' ), $this->notices );
+		$this->assertSame( array(), $this->orders->orders[501]->notes, 'nothing reserved yet: no portal action needed' );
+	}
+
+	/**
+	 * @dataProvider money_moved_states
+	 *
+	 * @param string $state Transaction state.
+	 */
+	public function test_no_email_with_money_reserved_or_taken_asks_for_void_or_refund( string $state ) {
+		$this->orders->applied_email         = '';
+		$this->api->transaction['state'] = $state;
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
+		$notes = $this->orders->orders[501]->notes;
+		$this->assertCount( 1, $notes );
+		$this->assertStringContainsString( 'ACTION REQUIRED', $notes[0] );
+		$this->assertStringContainsString( '629017977', $notes[0] );
+		$this->assertStringContainsString( 'error: Return: order 501: wallee transaction 629017977 must be voided or refunded in the wallee portal', implode( "\n", $this->logs ) );
+	}
+
+	public function money_moved_states(): array {
+		return array(
+			'authorized' => array( 'AUTHORIZED' ),
+			'completed'  => array( 'COMPLETED' ),
+			'fulfill'    => array( 'FULFILL' ),
+		);
+	}
+
+	public function test_no_email_applies_after_an_uncertain_process_too() {
+		$this->orders->applied_email = '';
+		$this->api->process          = new ApiException( 'timeout' );
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 501 => 'no_email' ), $this->orders->failed );
 	}
 
 	public function test_follow_up_read_error_still_redirects_to_wallee() {
@@ -418,6 +560,8 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( self::WALLEE, $url );
 		$this->assertSame( 629017977, $this->repository->row['transaction_id'] );
 		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( array(), $this->orders->failed, 'an unreadable transaction is not "no e-mail"' );
+		$this->assertSame( array( 501 ), $this->scheduled );
 	}
 
 	public function test_processed_state_that_cannot_be_stored_still_redirects() {

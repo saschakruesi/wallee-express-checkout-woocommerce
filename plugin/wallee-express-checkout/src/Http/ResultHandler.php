@@ -11,6 +11,7 @@ use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Order\OrderService;
 use Wallee\ExpressCheckout\Plugin;
@@ -71,6 +72,13 @@ final class ResultHandler {
 	private $linker;
 
 	/**
+	 * Schedules the background link: function ( int $order_id ): bool.
+	 *
+	 * @var callable
+	 */
+	private $schedule_link;
+
+	/**
 	 * Logger, called with a message and a level.
 	 *
 	 * @var callable
@@ -80,20 +88,22 @@ final class ResultHandler {
 	/**
 	 * Constructor.
 	 *
-	 * @param SessionRepository $repository Session storage.
-	 * @param UrlSigner         $signer     Signer.
-	 * @param OrderService      $orders     Order operations.
-	 * @param CustomerDetails   $details    Step 10.
-	 * @param OrderLinker       $linker     Link to the main plugin.
-	 * @param callable          $log        Logger: function ( string $message, string $level ).
+	 * @param SessionRepository $repository    Session storage.
+	 * @param UrlSigner         $signer        Signer.
+	 * @param OrderService      $orders        Order operations.
+	 * @param CustomerDetails   $details       Step 10.
+	 * @param OrderLinker       $linker        Link to the main plugin.
+	 * @param callable          $schedule_link Schedules the background link: function ( int $order_id ): bool.
+	 * @param callable          $log           Logger: function ( string $message, string $level ).
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, OrderService $orders, CustomerDetails $details, OrderLinker $linker, callable $log ) {
-		$this->repository = $repository;
-		$this->signer     = $signer;
-		$this->orders     = $orders;
-		$this->details    = $details;
-		$this->linker     = $linker;
-		$this->log        = $log;
+	public function __construct( SessionRepository $repository, UrlSigner $signer, OrderService $orders, CustomerDetails $details, OrderLinker $linker, callable $schedule_link, callable $log ) {
+		$this->repository    = $repository;
+		$this->signer        = $signer;
+		$this->orders        = $orders;
+		$this->details       = $details;
+		$this->linker        = $linker;
+		$this->schedule_link = $schedule_link;
+		$this->log           = $log;
 	}
 
 	/**
@@ -109,7 +119,7 @@ final class ResultHandler {
 				$repository = new SessionRepository( $wpdb );
 				$orders     = new OrderService();
 				$log        = array( $adapter, 'log' );
-				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log ), new OrderLinker( $adapter ), $log );
+				$handler    = new self( $repository, UrlSigner::fromWordPress(), $orders, new CustomerDetails( $api, $repository, $orders, $log ), new OrderLinker( $adapter ), array( LinkScheduler::class, 'schedule' ), $log );
 
 				Redirects::send( $handler->handle( Redirects::query( array( 'status', 'ec_session', 'sig' ) ) ), null );
 			}
@@ -168,24 +178,29 @@ final class ResultHandler {
 			return $this->toCart( Redirects::genericNotice() );
 		}
 
+		// The customer may have paid: a missing e-mail only gets a note here.
 		$transaction_id = $this->transactionId( $record, $order );
 		if ( null === $transaction_id || '' === $order->get_billing_email() ) {
 			try {
-				$this->details->collect( $record, $order );
+				$this->details->collectAfterPayment( $record, $order );
 			} catch ( \Throwable $e ) {
 				$this->log( sprintf( 'Result: session row %d order %d: transaction details not read (%s).', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
 			}
 			$transaction_id = $this->transactionId( $record, $order );
 		}
 
+		$linked = false;
 		if ( null === $transaction_id ) {
-			$this->log( sprintf( 'Result: session row %d order %d: no transaction ID, not linked.', $record->id(), $order->get_id() ), 'error' );
+			$this->log( sprintf( 'Result: session row %d order %d: no transaction ID, not linked yet.', $record->id(), $order->get_id() ), 'warning' );
 		} else {
 			try {
-				$this->linker->link( $order, $transaction_id );
+				$linked = $this->linker->link( $order, $transaction_id );
 			} catch ( \Throwable $e ) {
 				$this->log( sprintf( 'Result: order %d: link failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
 			}
+		}
+		if ( ! $linked && ! call_user_func( $this->schedule_link, $order->get_id() ) ) {
+			$this->log( sprintf( 'Result: order %d: background link not scheduled.', $order->get_id() ), 'warning' );
 		}
 
 		try {

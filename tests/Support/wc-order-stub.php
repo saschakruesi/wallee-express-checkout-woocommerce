@@ -16,6 +16,7 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $billing_email        = '';
 		public $payment_method       = 'wallee_express_checkout';
 		public $payment_method_title = 'wallee Express Checkout';
+		public $created_via          = 'wallee_express_checkout';
 		public $meta                 = array();
 		public $notes                = array();
 		public $saves                = 0;
@@ -43,6 +44,10 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 
 		public function get_billing_email() {
 			return $this->billing_email;
+		}
+
+		public function get_created_via() {
+			return $this->created_via;
 		}
 
 		public function get_payment_method() {

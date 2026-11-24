@@ -22,9 +22,9 @@ class FakeApiClient extends ApiClient {
 	public $sessions = array();
 
 	/**
-	 * Answer to processSession.
+	 * Answer to processSession; a list is consumed in order, its last answer repeats.
 	 *
-	 * @var string|\Throwable
+	 * @var string|\Throwable|array
 	 */
 	public $process = 'https://app-wallee.com/s/4711/payment/chargeattempt/redirect/1?securityToken=t';
 
@@ -71,8 +71,12 @@ class FakeApiClient extends ApiClient {
 	 */
 	public function processSession( int $session_id, string $merchant_reference, string $success_url, string $failure_url ): string {
 		$this->calls[] = array( 'processSession', $session_id, $merchant_reference, $success_url, $failure_url );
+		$answer        = $this->process;
+		if ( is_array( $answer ) ) {
+			$answer = count( $this->process ) > 1 ? array_shift( $this->process ) : $this->process[0];
+		}
 
-		return self::answer( $this->process );
+		return self::answer( $answer );
 	}
 
 	/**

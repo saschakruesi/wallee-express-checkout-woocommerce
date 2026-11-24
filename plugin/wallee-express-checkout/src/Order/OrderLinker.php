@@ -8,18 +8,26 @@
 namespace Wallee\ExpressCheckout\Order;
 
 use Wallee\ExpressCheckout\MainPluginAdapter;
-use Wallee\ExpressCheckout\Plugin;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
  * Writes the main plugin's transaction info row for the order and replaces
  * the provisional payment method by the main plugin's gateway (design 5.5,
- * amendment 1 "Linking to the main plugin"). Idempotent.
+ * amendment 1 "Linking to the main plugin"). Idempotent. When and how often
+ * it is tried is LinkScheduler's business.
  */
 final class OrderLinker {
 
 	const META_UNRESOLVED = '_wallee_ec_gateway_unresolved';
+
+	/**
+	 * Transaction states in which the payment connector is known for good:
+	 * an unresolved gateway then needs the merchant's attention.
+	 *
+	 * @var string[]
+	 */
+	const FINAL_STATES = array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' );
 
 	/**
 	 * Main plugin adapter.
@@ -38,46 +46,41 @@ final class OrderLinker {
 	}
 
 	/**
-	 * Retries an unresolved gateway when an order is viewed in the admin.
-	 */
-	public static function register(): void {
-		add_action(
-			'woocommerce_admin_order_data_after_order_details',
-			static function ( $order ) {
-				try {
-					( new self( Plugin::adapter() ) )->retry( $order );
-				} catch ( \Throwable $e ) {
-					Plugin::adapter()->log( sprintf( 'Admin retry of the gateway link failed (%s).', get_class( $e ) ), 'error' );
-				}
-			}
-		);
-	}
-
-	/**
 	 * Links the order to the transaction.
+	 *
+	 * An unresolved gateway only gets the admin note and flag once the
+	 * transaction is in a final authorised or completed state, or on the last
+	 * attempt; before that it means "try again later". A failing read gets
+	 * them on the last attempt only.
 	 *
 	 * @param \WC_Order $order          Order.
 	 * @param int       $transaction_id wallee transaction ID.
+	 * @param bool      $last_attempt   Whether no automatic retry follows.
 	 * @return bool Whether the order now carries the main plugin's gateway.
 	 */
-	public function link( \WC_Order $order, int $transaction_id ): bool {
+	public function link( \WC_Order $order, int $transaction_id, bool $last_attempt = false ): bool {
 		try {
 			$transaction = $this->adapter->readTransaction( $transaction_id );
 			$this->adapter->linkOrder( $transaction, $order );
 			$gateway = $this->adapter->resolveGatewayId( $transaction );
+			$state   = $this->adapter->transactionState( $transaction );
 		} catch ( \Throwable $e ) {
 			$this->adapter->log( sprintf( 'Order %d: linking transaction %d failed (%s).', $order->get_id(), $transaction_id, get_class( $e ) ), 'error' );
+			if ( $last_attempt ) {
+				$this->markUnresolved( $order, false );
+			}
 
 			return false;
 		}
 
 		if ( null === $gateway ) {
-			if ( '' === (string) $order->get_meta( self::META_UNRESOLVED ) ) {
-				$order->add_order_note( __( 'wallee Express Checkout: the payment method of this transaction could not be matched to a wallee payment gateway in WooCommerce. Until it is, please complete and refund this order in the wallee portal.', 'wallee-express-checkout' ) );
-				$order->update_meta_data( self::META_UNRESOLVED, 'yes' );
-				$order->save();
+			$final = in_array( $state, self::FINAL_STATES, true );
+			if ( $final || $last_attempt ) {
+				$this->markUnresolved( $order, true );
+				$this->adapter->log( sprintf( 'Order %d: gateway of transaction %d (state %s) unresolved.', $order->get_id(), $transaction_id, $state ), 'error' );
+			} else {
+				$this->adapter->log( sprintf( 'Order %d: gateway of transaction %d not known yet (state %s); retried later.', $order->get_id(), $transaction_id, '' === $state ? 'unknown' : $state ) );
 			}
-			$this->adapter->log( sprintf( 'Order %d: gateway of transaction %d unresolved.', $order->get_id(), $transaction_id ), 'error' );
 
 			return false;
 		}
@@ -109,20 +112,23 @@ final class OrderLinker {
 	}
 
 	/**
-	 * Admin order view: retries the link for an order whose gateway was
-	 * unresolved. Does nothing (and no request) for any other order.
+	 * Flags the order as not linked and adds the admin note, once.
 	 *
-	 * @param mixed $order Order passed by the hook.
+	 * @param \WC_Order $order            Order.
+	 * @param bool      $transaction_read Whether the transaction was read (only its gateway is unknown).
 	 */
-	public function retry( $order ): void {
-		if ( ! $order instanceof \WC_Order || '' === (string) $order->get_meta( self::META_UNRESOLVED ) ) {
+	public function markUnresolved( \WC_Order $order, bool $transaction_read ): void {
+		if ( '' !== (string) $order->get_meta( self::META_UNRESOLVED ) ) {
 			return;
 		}
-		$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
-		if ( $transaction_id <= 0 ) {
-			return;
-		}
-		$this->link( $order, $transaction_id );
+		$order->add_order_note(
+			$transaction_read
+				? __( 'wallee Express Checkout: the payment method of this transaction could not be matched to a wallee payment gateway in WooCommerce. Until it is, please complete and refund this order in the wallee portal.', 'wallee-express-checkout' )
+				: __( 'wallee Express Checkout: this order could not be linked to its wallee transaction. Until it is, please complete and refund this order in the wallee portal.', 'wallee-express-checkout' )
+		);
+		$order->update_meta_data( self::META_UNRESOLVED, 'yes' );
+		$order->save();
+		$this->adapter->log( sprintf( 'Order %d: marked as not linked to the wallee plugin.', $order->get_id() ), 'error' );
 	}
 
 	/**

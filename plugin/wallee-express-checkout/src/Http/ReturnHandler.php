@@ -9,7 +9,10 @@ namespace Wallee\ExpressCheckout\Http;
 
 use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
+use Wallee\ExpressCheckout\Api\ApiException;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\LinkScheduler;
+use Wallee\ExpressCheckout\Order\OrderFactory;
 use Wallee\ExpressCheckout\Order\OrderService;
 use Wallee\ExpressCheckout\Order\OrderValidator;
 use Wallee\ExpressCheckout\Plugin;
@@ -31,6 +34,10 @@ defined( 'ABSPATH' ) || exit;
  * process call is best effort, since the customer has approved the payment.
  */
 final class ReturnHandler {
+
+	const PROCESS_DONE   = 'done';
+	const PROCESS_MAYBE  = 'maybe';
+	const PROCESS_FAILED = 'failed';
 
 	/**
 	 * Session storage.
@@ -68,6 +75,13 @@ final class ReturnHandler {
 	private $details;
 
 	/**
+	 * Schedules the background link: function ( int $order_id ): bool.
+	 *
+	 * @var callable
+	 */
+	private $schedule_link;
+
+	/**
 	 * Logger, called with a message and a level.
 	 *
 	 * @var callable
@@ -84,20 +98,22 @@ final class ReturnHandler {
 	/**
 	 * Constructor.
 	 *
-	 * @param SessionRepository $repository Session storage.
-	 * @param UrlSigner         $signer     Signer.
-	 * @param ApiClient         $api        API client.
-	 * @param OrderService      $orders     Order operations.
-	 * @param CustomerDetails   $details    Step 10.
-	 * @param callable          $log        Logger: function ( string $message, string $level ).
+	 * @param SessionRepository $repository    Session storage.
+	 * @param UrlSigner         $signer        Signer.
+	 * @param ApiClient         $api           API client.
+	 * @param OrderService      $orders        Order operations.
+	 * @param CustomerDetails   $details       Step 10.
+	 * @param callable          $schedule_link Schedules the background link: function ( int $order_id ): bool.
+	 * @param callable          $log           Logger: function ( string $message, string $level ).
 	 */
-	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $log ) {
-		$this->repository = $repository;
-		$this->signer     = $signer;
-		$this->api        = $api;
-		$this->orders     = $orders;
-		$this->details    = $details;
-		$this->log        = $log;
+	public function __construct( SessionRepository $repository, UrlSigner $signer, ApiClient $api, OrderService $orders, CustomerDetails $details, callable $schedule_link, callable $log ) {
+		$this->repository    = $repository;
+		$this->signer        = $signer;
+		$this->api           = $api;
+		$this->orders        = $orders;
+		$this->details       = $details;
+		$this->schedule_link = $schedule_link;
+		$this->log           = $log;
 	}
 
 	/**
@@ -113,7 +129,7 @@ final class ReturnHandler {
 				$repository = new SessionRepository( $wpdb );
 				$orders     = new OrderService();
 				$log        = array( $adapter, 'log' );
-				$handler    = new self( $repository, UrlSigner::fromWordPress(), $api, $orders, new CustomerDetails( $api, $repository, $orders, $log ), $log );
+				$handler    = new self( $repository, UrlSigner::fromWordPress(), $api, $orders, new CustomerDetails( $api, $repository, $orders, $log ), array( LinkScheduler::class, 'schedule' ), $log );
 
 				$url = $handler->handle( Redirects::query( array( 'ec_session', 'sig' ) ) );
 				Redirects::send( $url, $handler->externalHost() );
@@ -158,22 +174,6 @@ final class ReturnHandler {
 		$this->log( sprintf( 'Return: session row %d created -> ordering.', $record->id() ) );
 
 		return $this->order( $record );
-	}
-
-	/**
-	 * Filter callback for `allowed_redirect_hosts`: adds the wallee host of
-	 * this request's redirect.
-	 *
-	 * @param mixed $hosts Allowed hosts.
-	 * @return array
-	 */
-	public function allowRedirectHost( $hosts ): array {
-		$hosts = is_array( $hosts ) ? $hosts : array();
-		if ( null !== $this->external_host ) {
-			$hosts[] = $this->external_host;
-		}
-
-		return $hosts;
 	}
 
 	/**
@@ -228,7 +228,7 @@ final class ReturnHandler {
 		}
 
 		try {
-			$order = $this->orders->create( $snapshot, $rate, $record->uuid(), self::walletName( $session ) );
+			$order = $this->orders->create( $snapshot, $rate, $record->uuid(), self::walletName( $session ), $record->walleeSessionId() );
 		} catch ( \Throwable $e ) {
 			// OrderFactory reports some causes as a bare reason code (`tax_rate_changed`).
 			$code = 1 === preg_match( '/^[a-z_]{1,40}$/', $e->getMessage() ) ? ': ' . $e->getMessage() : '';
@@ -248,30 +248,112 @@ final class ReturnHandler {
 			return $this->failOrder( $record, $order, OrderValidator::AMOUNT_MISMATCH );
 		}
 
+		// Marks the order as possibly known to wallee, so the unpaid-order
+		// cleanup leaves it alone from here on.
 		try {
-			$redirect = $this->api->processSession(
-				$record->walleeSessionId(),
-				(string) $order->get_id(),
-				SessionService::resultUrl( $record->uuid(), 'success' ),
-				SessionService::resultUrl( $record->uuid(), 'failure' )
-			);
+			$order->update_meta_data( OrderFactory::META_PROCESS_STARTED, (string) time() );
+			$order->save();
 		} catch ( \Throwable $e ) {
-			return $this->failOrder( $record, $order, 'process_failed', get_class( $e ) );
+			return $this->failOrder( $record, $order, 'order_update_failed', get_class( $e ) );
 		}
-		$this->log( sprintf( 'Return: session row %d wallee session %d processed for order %d.', $record->id(), $record->walleeSessionId(), $order->get_id() ) );
 
-		// From here on the customer is sent to wallee whatever happens. The
-		// row is marked first, so a reload during step 10 cannot strand it.
+		$outcome = $this->process( $record, $order );
+		if ( self::PROCESS_FAILED === $outcome[0] ) {
+			return $this->failOrder( $record, $order, 'process_failed', $outcome[1] );
+		}
+		$this->log( sprintf( 'Return: session row %d wallee session %d %s for order %d.', $record->id(), $record->walleeSessionId(), self::PROCESS_DONE === $outcome[0] ? 'processed' : 'probably processed', $order->get_id() ) );
+
+		return $this->afterProcess( $record, $order, self::PROCESS_DONE === $outcome[0] ? $outcome[1] : null );
+	}
+
+	/**
+	 * Calls process. An answer that leaves it open whether wallee processed
+	 * the session (no HTTP status, 5xx, an unusable response) is followed by
+	 * one session read: a session that reached wallee's payment step is
+	 * `maybe processed`; a session still `APPROVED` gets one more process
+	 * call (`merchantReference` is idempotent). Only a clear refusal (4xx) or
+	 * a session that did not move after the retry fails.
+	 *
+	 * @param SessionRecord $record Row.
+	 * @param \WC_Order     $order  Order.
+	 * @return array{0: string, 1: string} Outcome (one of the PROCESS_* constants) and the
+	 *                                     redirect URL (done) or the failure detail (failed).
+	 */
+	private function process( SessionRecord $record, \WC_Order $order ): array {
+		for ( $attempt = 1; ; ++$attempt ) {
+			try {
+				return array(
+					self::PROCESS_DONE,
+					$this->api->processSession(
+						$record->walleeSessionId(),
+						(string) $order->get_id(),
+						SessionService::resultUrl( $record->uuid(), 'success' ),
+						SessionService::resultUrl( $record->uuid(), 'failure' )
+					),
+				);
+			} catch ( \Throwable $e ) {
+				$status = $e instanceof ApiException ? $e->getStatusCode() : 0;
+				$detail = get_class( $e ) . ' HTTP ' . $status;
+				if ( $status >= 400 && $status < 500 ) {
+					return array( self::PROCESS_FAILED, $detail );
+				}
+				$this->log( sprintf( 'Return: session row %d order %d: process attempt %d uncertain (%s); reading the session.', $record->id(), $order->get_id(), $attempt, $detail ), 'warning' );
+			}
+
+			try {
+				$session = $this->api->getSession( $record->walleeSessionId() );
+			} catch ( \Throwable $e ) {
+				return array( self::PROCESS_FAILED, $detail . ', session unreadable (' . get_class( $e ) . ')' );
+			}
+			$state = isset( $session['state'] ) && is_string( $session['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $session['state'] ) : '';
+			if ( null !== CustomerDetails::transactionId( $session ) || in_array( $state, array( 'PROCESSING', 'AUTHORIZED' ), true ) ) {
+				return array( self::PROCESS_MAYBE, '' );
+			}
+			if ( 1 !== $attempt || 'APPROVED' !== $state ) {
+				return array( self::PROCESS_FAILED, $detail . ', session ' . ( '' === $state ? 'unknown' : $state ) );
+			}
+		}
+	}
+
+	/**
+	 * Step 10 and 11 once process went through (or probably did). The row is
+	 * marked first, so a reload during step 10 cannot strand it.
+	 *
+	 * Without an e-mail address the order fails (owner decision, design
+	 * amendment 2) and the customer is not sent on to wallee. A transaction
+	 * that cannot be read is not "no e-mail": the customer goes on and the
+	 * background link retries.
+	 *
+	 * @param SessionRecord $record   Row.
+	 * @param \WC_Order     $order    Order.
+	 * @param string|null   $redirect wallee's redirect URL, null when process probably went through but sent none.
+	 */
+	private function afterProcess( SessionRecord $record, \WC_Order $order, ?string $redirect ): string {
 		try {
 			$this->repository->update( $record->id(), array( 'state' => SessionRecord::PROCESSED ) );
 			$this->log( sprintf( 'Return: session row %d ordering -> processed.', $record->id() ) );
 		} catch ( \Throwable $e ) {
 			$this->log( sprintf( 'Return: session row %d could not be set to processed (%s).', $record->id(), get_class( $e ) ), 'error' );
 		}
+
+		$collected = null;
 		try {
-			$this->details->collect( $record, $order );
+			$collected = $this->details->collect( $record, $order );
 		} catch ( \Throwable $e ) {
-			$this->log( sprintf( 'Return: session row %d order %d: transaction details not read (%s); the result handler retries.', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
+			$this->log( sprintf( 'Return: session row %d order %d: transaction details not read (%s); retried later.', $record->id(), $order->get_id(), get_class( $e ) ), 'warning' );
+		}
+		if ( null !== $collected && ! $collected['email'] ) {
+			return $this->failWithoutEmail( $record, $order, $collected['transaction_id'], $collected['state'] );
+		}
+
+		if ( ! call_user_func( $this->schedule_link, $order->get_id() ) ) {
+			$this->log( sprintf( 'Return: order %d: background link not scheduled.', $order->get_id() ), 'warning' );
+		}
+
+		if ( null === $redirect ) {
+			$this->log( sprintf( 'Return: session row %d: no wallee redirect, order received page.', $record->id() ) );
+
+			return $order->get_checkout_order_received_url();
 		}
 
 		$host                = wp_parse_url( $redirect, PHP_URL_HOST );
@@ -279,6 +361,39 @@ final class ReturnHandler {
 		$this->log( sprintf( 'Return: session row %d redirected to wallee.', $record->id() ) );
 
 		return $redirect;
+	}
+
+	/**
+	 * The transaction was read and carries no usable e-mail address: order
+	 * `failed`, row `failed`, cart. If the money is already reserved or taken,
+	 * the merchant must void or refund it in the wallee portal.
+	 *
+	 * @param SessionRecord $record         Row.
+	 * @param \WC_Order     $order          Order.
+	 * @param int           $transaction_id wallee transaction ID.
+	 * @param string        $state          Transaction state.
+	 */
+	private function failWithoutEmail( SessionRecord $record, \WC_Order $order, int $transaction_id, string $state ): string {
+		$this->log( sprintf( 'Return: session row %d order %d failed: no_email (transaction %d, state %s).', $record->id(), $order->get_id(), $transaction_id, '' === $state ? 'unknown' : $state ), 'error' );
+		try {
+			$this->orders->fail( $order, 'no_email' );
+			if ( in_array( $state, array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' ), true ) ) {
+				$order->add_order_note(
+					sprintf(
+						/* translators: 1: wallee transaction ID, 2: transaction state. */
+						__( 'ACTION REQUIRED: wallee transaction %1$d is already %2$s (money reserved or taken), but this order failed because wallee returned no e-mail address. Void or refund transaction %1$d in the wallee portal.', 'wallee-express-checkout' ),
+						$transaction_id,
+						$state
+					)
+				);
+				$this->log( sprintf( 'Return: order %d: wallee transaction %d must be voided or refunded in the wallee portal (state %s).', $order->get_id(), $transaction_id, $state ), 'error' );
+			}
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Return: order %d could not be set to failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
+		$this->markFailed( $record );
+
+		return $this->toCart( __( 'Your wallet did not provide an e-mail address, so the order could not be placed. Please try again or use the regular checkout.', 'wallee-express-checkout' ) );
 	}
 
 	/**
@@ -298,6 +413,10 @@ final class ReturnHandler {
 			}
 		}
 		$this->log( sprintf( 'Return: session row %d in state %s is not processed again.', $record->id(), $state ) );
+
+		if ( SessionRecord::ORDERING === $state ) {
+			return $this->toCart( __( 'Your express payment is already being processed.', 'wallee-express-checkout' ) );
+		}
 
 		return $this->toCart();
 	}

@@ -30,6 +30,16 @@ final class OrderFactory {
 	const META_WALLET    = '_wallee_ec_wallet';
 
 	/**
+	 * The wallee session ID, stored when the order is created.
+	 */
+	const META_SESSION_ID = '_wallee_ec_session_id';
+
+	/**
+	 * Set right before the process call: the order may have reached wallee.
+	 */
+	const META_PROCESS_STARTED = '_wallee_ec_process_started';
+
+	/**
 	 * Creates the order, status `pending`, without addresses.
 	 *
 	 * All lines are built before the order exists, so a line that cannot be
@@ -37,16 +47,17 @@ final class OrderFactory {
 	 * with the approved amount. If WooCommerce arrives at another total, the
 	 * order is returned as it is.
 	 *
-	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param array|null   $rate     Stored rate of the selected shipping option, null if none.
-	 * @param string       $uuid     Express checkout session UUID.
-	 * @param string       $wallet   Wallet name.
+	 * @param CartSnapshot $snapshot   Snapshot.
+	 * @param array|null   $rate       Stored rate of the selected shipping option, null if none.
+	 * @param string       $uuid       Express checkout session UUID.
+	 * @param string       $wallet     Wallet name.
+	 * @param int          $session_id wallee session ID.
 	 * @throws \RuntimeException With message `tax_rate_changed` if a tax amount cannot be booked under the
 	 *                           WooCommerce tax rates that exist now. In every case no order remains.
 	 * @throws \RuntimeException With another message if a product no longer exists or the order cannot be created.
 	 * @throws \Throwable Whatever fails while the order is filled, after the order is deleted.
 	 */
-	public static function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet ): \WC_Order {
+	public static function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet, int $session_id ): \WC_Order {
 		$decimals = Money::decimals( $snapshot->currency() );
 		$location = $snapshot->taxLocation();
 
@@ -90,6 +101,7 @@ final class OrderFactory {
 				$order->add_item( $line );
 			}
 			$order->update_meta_data( self::META_SESSION, $uuid );
+			$order->update_meta_data( self::META_SESSION_ID, $session_id );
 			$order->update_meta_data( self::META_WALLET, sanitize_text_field( $wallet ) );
 
 			$order->update_taxes();
@@ -106,14 +118,16 @@ final class OrderFactory {
 	 * Writes addresses and e-mail of the transaction to the order.
 	 *
 	 * Every field is optional. A missing address is copied from the other one.
-	 * Without any e-mail the order is kept and gets a private note.
+	 * Whether a missing e-mail fails the order is the caller's decision (owner
+	 * decision, design amendment 2): this method only reports it.
 	 *
 	 * @param \WC_Order   $order         Order.
 	 * @param array       $transaction   Transaction read with billingAddress and shippingAddress expanded.
 	 * @param int         $customer_id   WordPress user ID, 0 for guests.
 	 * @param string|null $quote_country Country the shipping rate was calculated for.
+	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country = null ): void {
+	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country = null ): bool {
 		$billing  = self::address( isset( $transaction['billingAddress'] ) ? $transaction['billingAddress'] : null );
 		$shipping = self::address( isset( $transaction['shippingAddress'] ) ? $transaction['shippingAddress'] : null );
 		if ( ! self::has_values( $billing ) ) {
@@ -136,11 +150,8 @@ final class OrderFactory {
 
 		$order->save();
 
-		if ( null === $email && '' === $order->get_billing_email() ) {
-			self::add_note_once( $order, __( 'The payment is approved, but wallee returned no valid e-mail address for the customer.', 'wallee-express-checkout' ) );
-		}
 		if ( null !== $quote_country && '' !== $quote_country && '' !== $shipping['country'] && 0 !== strcasecmp( $shipping['country'], $quote_country ) ) {
-			self::add_note_once(
+			self::addNoteOnce(
 				$order,
 				sprintf(
 					/* translators: 1: country the shipping rate was calculated for, 2: country of the shipping address. */
@@ -150,6 +161,8 @@ final class OrderFactory {
 				)
 			);
 		}
+
+		return '' !== $order->get_billing_email();
 	}
 
 	/**
@@ -159,13 +172,34 @@ final class OrderFactory {
 	 * @param \WC_Order $order Order.
 	 * @param string    $note  Note text.
 	 */
-	private static function add_note_once( \WC_Order $order, string $note ): void {
+	public static function addNoteOnce( \WC_Order $order, string $note ): void {
 		foreach ( wc_get_order_notes( array( 'order_id' => $order->get_id() ) ) as $existing ) {
 			if ( $existing->content === $note ) {
 				return;
 			}
 		}
 		$order->add_order_note( $note );
+	}
+
+	/**
+	 * Filter callback for `woocommerce_cancel_unpaid_order`: WooCommerce's
+	 * hold-stock cleanup only cancels `checkout` orders. Express orders that
+	 * never reached the process call (no transaction, no process marker) are
+	 * cancelled too. Orders that may have reached wallee are left to the main
+	 * plugin's webhook; an abandoned 3-D Secure step relies on wallee failing
+	 * the transaction.
+	 *
+	 * @param mixed $cancel Whether WooCommerce would cancel the order.
+	 * @param mixed $order  Order.
+	 * @return mixed
+	 */
+	public static function cancelUnpaid( $cancel, $order ) {
+		if ( ! $order instanceof \WC_Order || self::CREATED_VIA !== $order->get_created_via() ) {
+			return $cancel;
+		}
+
+		return '' === (string) $order->get_meta( CustomerDetails::META_TRANSACTION )
+			&& '' === (string) $order->get_meta( self::META_PROCESS_STARTED );
 	}
 
 	/**

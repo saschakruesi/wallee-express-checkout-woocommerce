@@ -170,6 +170,16 @@ class MainPluginAdapter {
 	}
 
 	/**
+	 * State of a transaction read by readTransaction(), empty if unknown.
+	 *
+	 * @param object $transaction v1 SDK Transaction.
+	 * @return string
+	 */
+	public function transactionState( object $transaction ): string {
+		return method_exists( $transaction, 'getState' ) ? (string) $transaction->getState() : '';
+	}
+
+	/**
 	 * Writes the main plugin's transaction info row for the order (idempotent).
 	 *
 	 * @param object    $transaction v1 SDK Transaction.

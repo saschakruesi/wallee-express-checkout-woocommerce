@@ -24,6 +24,13 @@ class RecordingAdapter extends MainPluginAdapter {
 	public $gateway = 'wallee_7';
 
 	/**
+	 * State transactionState() returns.
+	 *
+	 * @var string
+	 */
+	public $state = 'AUTHORIZED';
+
+	/**
 	 * Thrown by readTransaction() when set.
 	 *
 	 * @var \Throwable|null
@@ -64,6 +71,15 @@ class RecordingAdapter extends MainPluginAdapter {
 		}
 
 		return (object) array( 'id' => $transaction_id );
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param object $transaction Transaction.
+	 */
+	public function transactionState( object $transaction ): string {
+		return $this->state;
 	}
 
 	/**

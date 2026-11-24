@@ -32,14 +32,25 @@ class OrderService {
 	/**
 	 * See OrderFactory::create().
 	 *
-	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param array|null   $rate     Stored rate of the selected shipping option.
-	 * @param string       $uuid     Session UUID.
-	 * @param string       $wallet   Wallet name.
+	 * @param CartSnapshot $snapshot   Snapshot.
+	 * @param array|null   $rate       Stored rate of the selected shipping option.
+	 * @param string       $uuid       Session UUID.
+	 * @param string       $wallet     Wallet name.
+	 * @param int          $session_id wallee session ID.
 	 * @throws \RuntimeException If the order cannot be created.
 	 */
-	public function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet ): \WC_Order {
-		return OrderFactory::create( $snapshot, $rate, $uuid, $wallet );
+	public function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet, int $session_id ): \WC_Order {
+		return OrderFactory::create( $snapshot, $rate, $uuid, $wallet, $session_id );
+	}
+
+	/**
+	 * See OrderFactory::addNoteOnce().
+	 *
+	 * @param \WC_Order $order Order.
+	 * @param string    $note  Private note.
+	 */
+	public function addNoteOnce( \WC_Order $order, string $note ): void {
+		OrderFactory::addNoteOnce( $order, $note );
 	}
 
 	/**
@@ -59,9 +70,10 @@ class OrderService {
 	 * @param array       $transaction   Transaction with addresses expanded.
 	 * @param int         $customer_id   WordPress user ID, 0 for guests.
 	 * @param string|null $quote_country Country the shipping rate was calculated for.
+	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): void {
-		OrderFactory::applyCustomer( $order, $transaction, $customer_id, $quote_country );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
+		return OrderFactory::applyCustomer( $order, $transaction, $customer_id, $quote_country );
 	}
 
 	/**

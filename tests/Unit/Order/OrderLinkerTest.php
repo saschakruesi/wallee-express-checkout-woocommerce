@@ -118,27 +118,51 @@ class OrderLinkerTest extends TestCase {
 
 		$this->assertFalse( $this->linker()->link( $this->order, 629017977 ) );
 		$this->assertSame( array(), $this->order->notes );
+		$this->assertSame( '', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
 		$this->assertSame( array(), $this->adapter->links );
 		$this->assertStringContainsString( 'InvalidArgumentException', $this->adapter->logs[0] );
 	}
 
-	public function test_admin_retry_only_runs_for_guarded_orders() {
-		$this->order->meta['_wallee_ec_transaction_id'] = 629017977;
+	public function test_read_error_on_the_last_attempt_flags_and_notes_once() {
+		$this->adapter->read_error = new \InvalidArgumentException( 'enum' );
 
-		$this->linker()->retry( $this->order );
-		$this->assertSame( array(), $this->adapter->reads );
+		$this->assertFalse( $this->linker()->link( $this->order, 629017977, true ) );
+		$this->assertFalse( $this->linker()->link( $this->order, 629017977, true ) );
 
-		$this->order->meta[ OrderLinker::META_UNRESOLVED ] = 'yes';
-		$this->linker()->retry( $this->order );
-		$this->assertSame( array( 629017977 ), $this->adapter->reads );
-		$this->assertSame( 'wallee_7', $this->order->get_payment_method() );
+		$this->assertSame( 'yes', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
+		$this->assertCount( 1, $this->order->notes );
+		$this->assertStringContainsString( 'could not be linked to its wallee transaction', $this->order->notes[0] );
 	}
 
-	public function test_admin_retry_ignores_non_orders_and_missing_transaction() {
-		$this->linker()->retry( new \stdClass() );
-		$this->order->meta[ OrderLinker::META_UNRESOLVED ] = 'yes';
-		$this->linker()->retry( $this->order );
+	public function test_unresolved_gateway_before_a_final_state_means_retry_later_without_note() {
+		$this->adapter->gateway = null;
+		foreach ( array( 'PROCESSING', 'CONFIRMED', '' ) as $state ) {
+			$this->adapter->state = $state;
+			$this->assertFalse( $this->linker()->link( $this->order, 629017977 ) );
+		}
 
-		$this->assertSame( array(), $this->adapter->reads );
+		$this->assertSame( array(), $this->order->notes );
+		$this->assertSame( '', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
+		$this->assertStringStartsWith( 'info: ', $this->adapter->logs[0] );
+	}
+
+	public function test_unresolved_gateway_on_the_last_attempt_flags_whatever_the_state() {
+		$this->adapter->gateway = null;
+		$this->adapter->state   = 'PROCESSING';
+
+		$this->assertFalse( $this->linker()->link( $this->order, 629017977, true ) );
+		$this->assertSame( 'yes', $this->order->get_meta( OrderLinker::META_UNRESOLVED ) );
+		$this->assertStringContainsString( 'could not be matched', $this->order->notes[0] );
+	}
+
+	public function test_unresolved_gateway_in_every_final_state_flags() {
+		foreach ( array( 'AUTHORIZED', 'COMPLETED', 'FULFILL' ) as $state ) {
+			$order                  = new \WC_Order( 502, 1.0 );
+			$this->adapter->gateway = null;
+			$this->adapter->state   = $state;
+
+			$this->linker()->link( $order, 629017977 );
+			$this->assertSame( 'yes', $order->get_meta( OrderLinker::META_UNRESOLVED ), $state );
+		}
 	}
 }

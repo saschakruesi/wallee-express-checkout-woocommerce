@@ -53,6 +53,9 @@ class ResultHandlerTest extends TestCase {
 	/** @var string[] */
 	private $notices = array();
 
+	/** @var int[] Order IDs the background link was scheduled for. */
+	private $scheduled = array();
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
@@ -107,6 +110,7 @@ class ResultHandlerTest extends TestCase {
 		Functions\when( 'WC' )->justReturn( $wc );
 
 		$this->notices    = array();
+		$this->scheduled  = array();
 		$this->order      = new \WC_Order( 501, 60.11 );
 		$this->repository = $this->row( 'cart' );
 		$this->api        = new FakeApiClient();
@@ -151,6 +155,10 @@ class ResultHandlerTest extends TestCase {
 			$this->orders,
 			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
 			new OrderLinker( $this->adapter ),
+			function ( $order_id ) {
+				$this->scheduled[] = $order_id;
+				return true;
+			},
 			$log
 		);
 	}
@@ -177,6 +185,39 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'pending', $this->order->get_status(), 'status is left to the webhook' );
 		$this->assertSame( array(), $this->api->calls, 'transaction and e-mail known: no repeat of step 10' );
 		$this->assertSame( array(), $this->notices );
+		$this->assertSame( array(), $this->scheduled, 'linked: nothing left for the background job' );
+	}
+
+	public function test_success_without_email_keeps_the_paid_order_and_notes_once() {
+		$this->order->billing_email  = '';
+		$this->orders->applied_email = '';
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+		$this->repository->row['state'] = 'processed';
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( 'pending', $this->order->get_status() );
+		$this->assertSame( array( 'The payment is approved, but wallee returned no valid e-mail address for the customer.' ), $this->order->notes );
+		$this->assertSame( 'completed', $this->repository->row['state'] );
+	}
+
+	public function test_success_that_cannot_link_schedules_the_background_link() {
+		$this->adapter->read_error = new \InvalidArgumentException( 'enum' );
+
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertSame( array( 501 ), $this->scheduled );
+	}
+
+	public function test_success_without_transaction_schedules_the_background_link() {
+		$this->repository = $this->row( 'cart', array( 'transaction_id' => null ) );
+		unset( $this->order->meta['_wallee_ec_transaction_id'] );
+		$this->api->sessions = array( ReturnHandlerTest::approved() );
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+		$this->assertSame( array(), $this->adapter->reads );
+		$this->assertSame( array( 501 ), $this->scheduled );
 	}
 
 	public function test_success_in_product_context_leaves_the_cart_alone() {
