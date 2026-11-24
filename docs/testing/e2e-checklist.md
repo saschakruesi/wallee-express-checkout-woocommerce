@@ -10,7 +10,7 @@ A tester runs each case by hand and fills in the result row. The result rows are
 | WordPress | 7.1.5 (read from the staging shop with `infra/bin/wp core version`), PHP 8.2 |
 | WooCommerce | 11.0.1 |
 | wallee main plugin | 3.4.11 |
-| wallee Express Checkout | 0.1.0, branch `prototype`, deployed with `infra/bin/deploy` |
+| wallee Express Checkout | 0.1.1, branch `prototype`, deployed with `infra/bin/deploy` |
 | Wallet | Bogus Pay (Test) |
 | Space | wallee test space, environment TEST (setting "Environment" = Test) |
 
@@ -18,7 +18,7 @@ Before starting: WooCommerce > Settings > wallee Express Checkout (own tab, next
 
 ## Shop facts used in the expectations
 
-- Currency CHF. Prices include 8.1 % tax. Tax and shipping tax use the Swiss rate for every destination (the add-on uses the tax location of the cart, not the wallet address).
+- Currency CHF. Prices include 8.1 % tax. Taxes are calculated from the shipping address (WooCommerce default) and a guest's location defaults to the shop base, so the tax location of a cart is CH unless the cart's shipping calculator says otherwise. Since 0.1.1 the wallet offers shipping only inside that tax location (design amendment 3): with a CH tax location, DE and other countries get "Express checkout is not available for this destination. Please use the regular checkout."
 - Products: Notebook 25.00 (simple), T-Shirt 30.00 (variable, sizes S, M, L), Gift card 50.00 (virtual).
 - Coupon `TEN`: 10 % off the products (not shipping).
 - Shipping: zone CH has flat rate 8.11 incl. tax (7.50 + 0.61 tax) and free shipping from 100.00; zone DE has flat rate 16.22 incl. tax. No zone elsewhere.
@@ -79,7 +79,7 @@ Expect: order is attached to that account (WooCommerce > Orders shows the custom
 
 ### 6. Address without a shipping method
 Steps: Notebook in the cart. In the wallet sheet choose or enter a shipping address in a country without a zone (for example France). If Bogus Pay offers no address choice, record "not testable" and the reason.
-Expect: the sheet reports that shipping is not available to that address (the add-on answers `COUNTRY_UNAVAILABLE`) and cannot be approved; switching to a CH or DE address makes the options appear again (DE: flat rate 16.22, total 41.22). No order is created while the address is unsupported.
+Expect: the sheet reports that shipping is not available to that address (the add-on answers `COUNTRY_UNAVAILABLE`) and cannot be approved; switching to a CH address makes the options appear again. A DE address is also refused while the cart's tax location is CH (see case 23). No order is created while the address is unsupported.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -158,8 +158,8 @@ Expect: browser returns to the cart with an error notice; no order for this atte
 | | | | |
 
 ### 16. Coupon with an e-mail restriction
-Steps: create coupon `MAILONLY` (10 %, "Allowed emails" set to any address). Add Notebook, apply `MAILONLY` (as a logged-out guest it may be refused in the cart: log in with an account whose e-mail is allowed so the cart accepts it). Wallet button, standard approval.
-Expect: the add-on does not know the wallet e-mail when it validates, so the coupon counts as invalid: browser returns to the cart with an error notice, no order, no charge. Log: `rejected: coupon_invalid`. Delete the coupon afterwards.
+Steps: create coupon `MAILONLY` (10 %). (a) "Allowed emails" set to the e-mail Bogus Pay returns (read it from an earlier Bogus Pay order) or its domain with a wildcard (`*@domain`). Add Notebook, apply `MAILONLY` (as a logged-out guest the cart may refuse it: log in with an account whose e-mail is allowed so the cart accepts it). Wallet button, standard approval. (b) The same with "Allowed emails" set to an address the wallet does not return.
+Expect: (a) the order succeeds with the coupon. (b) after approval the browser returns to the cart with a notice that a coupon cannot be used; the order is `Failed` with reason `coupon_invalid`; the customer is not sent to the payment step. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -200,6 +200,38 @@ Expect: after approval the customer returns to the cart with the notice that the
 ### 21. SDK shim switched off
 Steps: add an mu-plugin with `add_filter( 'wallee_ec_enable_sdk_shim', '__return_false' );` (only on a test shop the owner agrees to change). Visit the admin, the cart and a product page. Remove the mu-plugin afterwards.
 Expect: admin error notice that express checkout is disabled because the shim is not active; status line "SDK compatibility shim: unavailable"; no buttons; the session endpoint answers `reason: not_configured`.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 22. TEST environment notice and order note
+Steps: Environment Test, at least one of "Cart page" / "Product pages" ticked. Open any admin page as a shop manager, then complete case 1.
+Expect: a yellow notice on every admin page, without a dismiss button: "wallee Express Checkout runs in the TEST environment. Payments are simulated; do not ship goods for these orders." The new order has the private note "Test payment (wallee Express Checkout TEST environment). No real money was moved." and the meta `_wallee_ec_environment` = `TEST`; its payment method title is unchanged. Untick both display switches: the admin notice disappears (tick them again afterwards).
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 23. Destination country different from the tax country
+Steps: logged out, empty cart (tax location CH). Add Notebook, wallet button, and in the sheet choose or enter a DE shipping address. If Bogus Pay offers no address choice, record "not testable".
+Expect: no shipping option is offered for the DE address; the sheet shows "Express checkout is not available for this destination. Please use the regular checkout." and cannot be approved. Log: `destination outside the tax location`. A CH address works as in case 1.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 24. Coupon with a usage limit per user, used twice as a guest
+Steps: create coupon `ONCE` (10 %, Usage limit per user = 1). Logged out: add Notebook, apply `ONCE`, standard approval; wait until the order is `On hold` or `Processing`. Then, again logged out and with the same wallet (same e-mail): add Notebook, apply `ONCE`, standard approval.
+Expect: the first order succeeds with the coupon. The second returns to the cart after approval with a notice that a coupon cannot be used; its order is `Failed` with reason `coupon_invalid`; no payment step, no charge. Log: `failed: coupon_invalid`. Delete the coupon afterwards.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 25. Return link older than 2 hours
+Steps: complete case 1 and note the return URL (`...?wc-api=wallee_ec_return&ec_session=...&sig=...`, visible in the browser history before the 3-D Secure step). Open it again more than 2 hours after the wallet session was created.
+Expect: the cart page with the generic notice "Your express payment could not be completed..."; not the order-received page; no second order. Log: `too old for its return link`.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
