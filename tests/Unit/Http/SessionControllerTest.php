@@ -12,9 +12,12 @@ use Brain\Monkey\Filters;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Http\SessionController;
+use Wallee\ExpressCheckout\MainPluginAdapter;
+use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Tests\Support\FakeWpdb;
+use Wallee\ExpressCheckout\Tests\Support\RecordingAdapter;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wp-rest-stub.php';
@@ -441,6 +444,40 @@ class SessionControllerTest extends TestCase {
 			),
 			$response->get_data()
 		);
+	}
+
+	/**
+	 * Sets the shared adapter of the add-on.
+	 *
+	 * @param MainPluginAdapter|null $adapter Adapter, null to reset.
+	 */
+	private function set_adapter( ?MainPluginAdapter $adapter ): void {
+		$property = new \ReflectionProperty( Plugin::class, 'adapter' );
+		$property->setAccessible( true );
+		$property->setValue( null, $adapter );
+	}
+
+	public function test_any_error_while_building_the_snapshot_is_a_refusal_and_logs_the_class_only() {
+		$adapter = new RecordingAdapter();
+		$this->set_adapter( $adapter );
+		Functions\when( 'WC' )->justReturn( (object) array( 'customer' => new \stdClass() ) );
+		Functions\when( 'wc_get_product' )->alias(
+			static function () {
+				throw new \Exception( 'third-party validator: secret detail' );
+			}
+		);
+		$request = new class() {
+			public function get_param( $name ) {
+				return 'productId' === $name || 'quantity' === $name ? 1 : array();
+			}
+		};
+
+		try {
+			$this->assertNull( $this->controller->snapshotAndHash( 'product', $request ) );
+		} finally {
+			$this->set_adapter( null );
+		}
+		$this->assertSame( array( 'warning: Session refused: snapshot not built (Exception).' ), $adapter->logs );
 	}
 
 	public function test_every_session_route_response_is_marked_not_cacheable() {

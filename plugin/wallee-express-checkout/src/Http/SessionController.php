@@ -316,17 +316,11 @@ final class SessionController {
 			return self::refusal( 'not_configured' );
 		}
 
-		try {
-			$snapshot = $this->snapshotFor( $context, $request );
-			$hash     = $snapshot->hash();
-		} catch ( \InvalidArgumentException $e ) {
-			if ( SnapshotFactory::TOTAL_MISMATCH === $e->getMessage() ) {
-				$adapter->log( 'Session refused: the cart snapshot does not reproduce the cart total (total_mismatch).', 'warning' );
-			}
-			return self::refusal( 'unavailable' );
-		} catch ( \RuntimeException $e ) {
+		$built = $this->snapshotAndHash( $context, $request );
+		if ( null === $built ) {
 			return self::refusal( 'unavailable' );
 		}
+		list( $snapshot, $hash ) = $built;
 
 		$reason = Eligibility::fromEnvironment( true )->reason( $snapshot );
 		if ( null !== $reason ) {
@@ -399,6 +393,34 @@ final class SessionController {
 		}
 
 		return gmdate( 'Y-m-d\TH:i:s\Z', $created->getTimestamp() + self::LIFETIME_SECONDS );
+	}
+
+	/**
+	 * The snapshot for the requested context and its hash, or null when none
+	 * can be built. Any error counts as a refusal, also one thrown by
+	 * third-party code hooked into WooCommerce's validation; only its class
+	 * is logged.
+	 *
+	 * @param string           $context Context.
+	 * @param \WP_REST_Request $request Request.
+	 * @return array{0: CartSnapshot, 1: string}|null
+	 */
+	public function snapshotAndHash( string $context, $request ): ?array {
+		try {
+			$snapshot = $this->snapshotFor( $context, $request );
+
+			return array( $snapshot, $snapshot->hash() );
+		} catch ( \InvalidArgumentException $e ) {
+			if ( SnapshotFactory::TOTAL_MISMATCH === $e->getMessage() ) {
+				Plugin::adapter()->log( 'Session refused: the cart snapshot does not reproduce the cart total (total_mismatch).', 'warning' );
+			}
+		} catch ( \RuntimeException $e ) {
+			return null;
+		} catch ( \Throwable $e ) {
+			Plugin::adapter()->log( sprintf( 'Session refused: snapshot not built (%s).', get_class( $e ) ), 'warning' );
+		}
+
+		return null;
 	}
 
 	/**
