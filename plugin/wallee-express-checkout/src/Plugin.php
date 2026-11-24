@@ -106,6 +106,8 @@ final class Plugin {
 	private static function register_components(): void {
 		Session\Installer::register();
 		Http\SessionController::register();
+		Frontend\CartButtons::register();
+		Frontend\ProductButtons::register();
 		if ( is_admin() ) {
 			Admin\Settings::register();
 		}
