@@ -72,8 +72,14 @@ class EligibilityTest extends TestCase {
 		return $this->snapshot( array( 'items' => array( CartSnapshotTest::item( array( 'needs_shipping' => false ) ) ) ) );
 	}
 
-	public function test_virtual_only_is_refused() {
+	public function test_virtual_only_is_eligible_by_default() {
 		$e = new Eligibility( true, true, false );
+
+		$this->assertNull( $e->reason( $this->virtual_only() ) );
+	}
+
+	public function test_virtual_only_is_refused_when_switched_off() {
+		$e = new Eligibility( true, true, false, false );
 
 		$this->assertSame( 'no_shipping_needed', $e->reason( $this->virtual_only() ) );
 	}
@@ -100,7 +106,7 @@ class EligibilityTest extends TestCase {
 	}
 
 	public function test_no_shipping_needed_comes_after_empty_and_before_the_others() {
-		$e    = new Eligibility( false, false, false );
+		$e    = new Eligibility( false, false, false, false );
 		$item = CartSnapshotTest::item(
 			array(
 				'needs_shipping'  => false,
@@ -117,10 +123,10 @@ class EligibilityTest extends TestCase {
 		try {
 			\Brain\Monkey\Functions\when( 'get_option' )->justReturn( 'yes' );
 			\Brain\Monkey\Functions\when( 'is_user_logged_in' )->justReturn( false );
-			$this->assertSame( 'no_shipping_needed', Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ) );
+			$this->assertNull( Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ), 'allowed by default' );
 
-			\Brain\Monkey\Filters\expectApplied( 'wallee_ec_allow_without_shipping' )->andReturn( true );
-			$this->assertNull( Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ) );
+			\Brain\Monkey\Filters\expectApplied( 'wallee_ec_allow_without_shipping' )->once()->with( true )->andReturn( false );
+			$this->assertSame( 'no_shipping_needed', Eligibility::fromEnvironment( true )->reason( $this->virtual_only() ), 'a filter returning false hides the buttons' );
 		} finally {
 			\Brain\Monkey\tearDown();
 		}

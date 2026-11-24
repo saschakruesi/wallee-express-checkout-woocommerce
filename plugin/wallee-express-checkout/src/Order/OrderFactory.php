@@ -133,22 +133,27 @@ final class OrderFactory {
 	/**
 	 * Writes addresses and e-mail of the transaction to the order.
 	 *
-	 * Every field is optional. A missing address is copied from the other one.
+	 * Every field is optional. A missing billing address is copied from the
+	 * shipping address. A missing shipping address is copied from the billing
+	 * address only when the order needs shipping; an order without shipping
+	 * keeps its shipping fields empty, as at WooCommerce's checkout (taxes
+	 * and the destination check then use the billing address).
 	 * Whether a missing e-mail or another destination fails the order is the
 	 * caller's decision: this method only writes the data.
 	 *
-	 * @param \WC_Order $order       Order.
-	 * @param array     $transaction Transaction read with billingAddress and shippingAddress expanded.
-	 * @param int       $customer_id WordPress user ID, 0 for guests.
+	 * @param \WC_Order $order          Order.
+	 * @param array     $transaction    Transaction read with billingAddress and shippingAddress expanded.
+	 * @param int       $customer_id    WordPress user ID, 0 for guests.
+	 * @param bool      $needs_shipping Whether anything in the order needs shipping.
 	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
+	public static function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, bool $needs_shipping = true ): bool {
 		$billing  = self::address( isset( $transaction['billingAddress'] ) ? $transaction['billingAddress'] : null );
 		$shipping = self::address( isset( $transaction['shippingAddress'] ) ? $transaction['shippingAddress'] : null );
 		if ( ! self::has_values( $billing ) ) {
 			$billing = $shipping;
 		}
-		if ( ! self::has_values( $shipping ) ) {
+		if ( ! self::has_values( $shipping ) && $needs_shipping ) {
 			$shipping = $billing;
 		}
 

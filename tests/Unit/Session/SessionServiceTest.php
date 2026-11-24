@@ -169,6 +169,10 @@ class SessionServiceTest extends TestCase {
 
 		$this->assertArrayNotHasKey( 'merchantShippingCallbackUrl', $this->transport->calls[0]['body'] );
 		$this->assertArrayHasKey( 'merchantRedirectUrl', $this->transport->calls[0]['body'] );
+		$this->assertNotEmpty( $this->transport->calls[0]['body']['lineItems'] );
+		foreach ( $this->transport->calls[0]['body']['lineItems'] as $line ) {
+			$this->assertFalse( $line['shippingRequired'], 'no line of a virtual snapshot requires shipping' );
+		}
 	}
 
 	public function test_urls_share_uuid_and_signatures_verify_for_own_purpose_only() {

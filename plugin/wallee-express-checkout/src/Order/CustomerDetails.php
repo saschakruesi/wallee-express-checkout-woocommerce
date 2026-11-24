@@ -35,6 +35,13 @@ final class CustomerDetails {
 	const COUPONS_NOT_RECHECKED = 'coupons_not_rechecked';
 
 	/**
+	 * Order meta: the order of a cart without shipping was kept at the offered
+	 * price although the customer's address has other tax rates, and got
+	 * TaxDestination::offeredPriceNote().
+	 */
+	const META_TAX_KEPT = '_wallee_ec_tax_kept_at_offered_price';
+
+	/**
 	 * API client.
 	 *
 	 * @var ApiClient
@@ -116,7 +123,8 @@ final class CustomerDetails {
 		call_user_func( $this->log, sprintf( 'Session row %d: order %d has transaction %d.', $record->id(), $order->get_id(), $transaction_id ) );
 
 		$transaction = $this->api->getTransaction( $transaction_id );
-		$email       = $this->orders->applyCustomer( $order, $transaction, $record->snapshot()->customerId() );
+		$snapshot    = $record->snapshot();
+		$email       = $this->orders->applyCustomer( $order, $transaction, $snapshot->customerId(), $snapshot->needsShipping() );
 		$state       = isset( $transaction['state'] ) && is_string( $transaction['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $transaction['state'] ) : '';
 		call_user_func(
 			$this->log,
@@ -193,6 +201,28 @@ final class CustomerDetails {
 	}
 
 	/**
+	 * Keeps the order of a cart without shipping at the offered price when the
+	 * customer's address has other tax rates (owner decision): the wallet
+	 * shows no shipping step for such a cart, so the destination could not be
+	 * refused before payment. Adds TaxDestination::offeredPriceNote() once per
+	 * order (flag META_TAX_KEPT). Never throws: a storage error is logged.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function keepAtOfferedPrice( \WC_Order $order ): void {
+		try {
+			if ( 'yes' === $order->get_meta( self::META_TAX_KEPT ) ) {
+				return;
+			}
+			$this->orders->addNoteOnce( $order, TaxDestination::offeredPriceNote() );
+			$order->update_meta_data( self::META_TAX_KEPT, 'yes' );
+			$order->save();
+		} catch ( \Throwable $e ) {
+			call_user_func( $this->log, sprintf( 'Order %d: offered price note not saved (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
+	}
+
+	/**
 	 * Runs the skipped checks on a paid order and records that they ran.
 	 *
 	 * @param SessionRecord $record    Row.
@@ -251,6 +281,11 @@ final class CustomerDetails {
 		if ( OrderValidator::TAX_REGION_UNMATCHED === $destination ) {
 			$this->orders->addNoteOnce( $order, TaxDestination::regionNote() );
 			call_user_func( $this->log, sprintf( 'Order %d: tax region not matched; order kept with a note.', $order->get_id() ), 'warning' );
+			$destination = null;
+		}
+		if ( OrderValidator::DESTINATION_CHANGED === $destination && ! $snapshot->needsShipping() ) {
+			$this->keepAtOfferedPrice( $order );
+			call_user_func( $this->log, sprintf( 'Order %d: tax destination differs for a cart without shipping; order kept at the offered price with a note.', $order->get_id() ), 'warning' );
 			$destination = null;
 		}
 

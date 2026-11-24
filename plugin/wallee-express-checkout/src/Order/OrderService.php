@@ -67,13 +67,14 @@ class OrderService {
 	/**
 	 * See OrderFactory::applyCustomer().
 	 *
-	 * @param \WC_Order $order       Order.
-	 * @param array     $transaction Transaction with addresses expanded.
-	 * @param int       $customer_id WordPress user ID, 0 for guests.
+	 * @param \WC_Order $order          Order.
+	 * @param array     $transaction    Transaction with addresses expanded.
+	 * @param int       $customer_id    WordPress user ID, 0 for guests.
+	 * @param bool      $needs_shipping Whether anything in the order needs shipping.
 	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
-		return OrderFactory::applyCustomer( $order, $transaction, $customer_id );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, bool $needs_shipping = true ): bool {
+		return OrderFactory::applyCustomer( $order, $transaction, $customer_id, $needs_shipping );
 	}
 
 	/**

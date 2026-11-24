@@ -48,9 +48,9 @@ final class Eligibility {
 	 * @param bool $configured             Main plugin is configured.
 	 * @param bool $guest_checkout_allowed Guest checkout is enabled.
 	 * @param bool $logged_in              Customer is logged in.
-	 * @param bool $allow_without_shipping Buttons may show when nothing needs shipping.
+	 * @param bool $allow_without_shipping Buttons may show when nothing needs shipping (default true).
 	 */
-	public function __construct( bool $configured, bool $guest_checkout_allowed, bool $logged_in, bool $allow_without_shipping = false ) {
+	public function __construct( bool $configured, bool $guest_checkout_allowed, bool $logged_in, bool $allow_without_shipping = true ) {
 		$this->configured             = $configured;
 		$this->guest_checkout_allowed = $guest_checkout_allowed;
 		$this->logged_in              = $logged_in;
@@ -67,13 +67,14 @@ final class Eligibility {
 
 		/**
 		 * Whether express buttons may show when nothing in the cart (or the
-		 * viewed product) needs shipping. Off by default (owner decision): the
-		 * wallee wallet sheet currently asks for a shipping address for such
-		 * sessions and then rejects it, so the purchase cannot complete.
+		 * viewed product) needs shipping. On by default (owner decision): the
+		 * wallet then asks for no delivery address. Return false to hide the
+		 * buttons for such carts (for example while testing with wallee's
+		 * Bogus Pay test wallet, whose sheet fails for such sessions).
 		 *
-		 * @param bool $allow Default false.
+		 * @param bool $allow Default true.
 		 */
-		$allow = (bool) apply_filters( 'wallee_ec_allow_without_shipping', false );
+		$allow = (bool) apply_filters( 'wallee_ec_allow_without_shipping', true );
 
 		return new self( $configured, $guest_checkout, is_user_logged_in(), $allow );
 	}
