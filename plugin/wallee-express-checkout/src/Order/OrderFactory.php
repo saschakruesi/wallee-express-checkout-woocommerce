@@ -9,12 +9,14 @@ namespace Wallee\ExpressCheckout\Order;
 
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Cart\LineItemBuilder;
+use Wallee\ExpressCheckout\Cart\VariationAttributes;
 use Wallee\ExpressCheckout\Support\Money;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Talks to WooCommerce. Not unit tested, verified on the staging shop.
+ * Talks to WooCommerce. Mostly verified on the staging shop; the product line
+ * checks and the order helpers are unit tested with stand-ins.
  *
  * Amounts come from the snapshot and the stored shipping rate, never from the
  * current prices: every line total and tax is set explicitly and the order is
@@ -40,6 +42,17 @@ final class OrderFactory {
 	const META_PROCESS_STARTED = '_wallee_ec_process_started';
 
 	/**
+	 * Authorization environment of the payment (TEST or PRODUCTION).
+	 */
+	const META_ENVIRONMENT = '_wallee_ec_environment';
+
+	/**
+	 * Exception message when a built product line does not refer to the
+	 * snapshot's product and variation.
+	 */
+	const LINE_IDENTITY_CHANGED = 'line_identity_changed';
+
+	/**
 	 * Creates the order, status `pending`, without addresses.
 	 *
 	 * All lines are built before the order exists, so a line that cannot be
@@ -54,6 +67,8 @@ final class OrderFactory {
 	 * @param int          $session_id wallee session ID.
 	 * @throws \RuntimeException With message `tax_rate_changed` if a tax amount cannot be booked under the
 	 *                           WooCommerce tax rates that exist now. In every case no order remains.
+	 * @throws \RuntimeException With message `line_identity_changed` if a built product line does not refer to the
+	 *                           snapshot's product and variation; no order is created.
 	 * @throws \RuntimeException With another message if a product no longer exists or the order cannot be created.
 	 * @throws \Throwable Whatever fails while the order is filled, after the order is deleted.
 	 */
@@ -226,6 +241,8 @@ final class OrderFactory {
 	 * @param array       $item     Snapshot item.
 	 * @param array       $location Tax location.
 	 * @param int         $decimals Decimal places.
+	 * @throws \RuntimeException With message `line_identity_changed` if the line no longer refers to the snapshot's
+	 *                           product and variation, or `tax_rate_changed`.
 	 */
 	private static function product_item( \WC_Product $product, array $item, array $location, int $decimals ): \WC_Order_Item_Product {
 		$line = new \WC_Order_Item_Product();
@@ -233,9 +250,15 @@ final class OrderFactory {
 		$line->set_name( $item['name'] );
 		$line->set_quantity( $item['quantity'] );
 		$line->set_tax_class( $item['tax_class'] );
-		$line->set_variation( $item['variation'] );
+		$line->set_variation( self::attributesOnly( $item['variation'] ) );
 		$line->set_subtotal( $item['line_subtotal'] );
 		$line->set_total( $item['line_total'] );
+
+		// The variation data is written as item meta; it must not have changed
+		// which product the line refers to.
+		if ( (int) $line->get_product_id() !== $item['product_id'] || (int) $line->get_variation_id() !== $item['variation_id'] ) {
+			throw new \RuntimeException( self::LINE_IDENTITY_CHANGED ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Not output.
+		}
 
 		$total = self::book_taxes( $item['line_tax'], $item['tax_rates'], $location, $item['tax_class'], false, $decimals );
 		$sub   = self::book_taxes( $item['line_subtotal_tax'], $item['tax_rates'], $location, $item['tax_class'], false, $decimals );
@@ -251,6 +274,24 @@ final class OrderFactory {
 		$line->add_meta_data( self::META_UNIQUE_ID, LineItemBuilder::uniqueIdFor( 'item', $item['key'] ), true );
 
 		return $line;
+	}
+
+	/**
+	 * The variation attribute entries of a snapshot item (`attribute_*` keys),
+	 * nothing else.
+	 *
+	 * @param array $variation Snapshot item variation.
+	 * @return array<string, string>
+	 */
+	public static function attributesOnly( array $variation ): array {
+		$attributes = array();
+		foreach ( $variation as $key => $value ) {
+			if ( VariationAttributes::isAttributeKey( $key ) && is_scalar( $value ) ) {
+				$attributes[ $key ] = (string) $value;
+			}
+		}
+
+		return $attributes;
 	}
 
 	/**

@@ -171,6 +171,39 @@ class CartSnapshotTest extends TestCase {
 		CartSnapshot::fromArray( self::data( array( 'items' => array( $item ) ) ) );
 	}
 
+	/**
+	 * @dataProvider non_attribute_keys
+	 *
+	 * @param string|int $key Variation key that is not an attribute key.
+	 */
+	public function test_variation_keys_other_than_attribute_keys_are_rejected( $key ) {
+		$this->expectException( \InvalidArgumentException::class );
+
+		CartSnapshot::fromArray( self::data( array( 'items' => array( self::item( array( 'variation' => array( $key => '12' ) ) ) ) ) ) );
+	}
+
+	public function non_attribute_keys(): array {
+		return array(
+			'product id'    => array( '_product_id' ),
+			'variation id'  => array( '_variation_id' ),
+			'reduced stock' => array( '_reduced_stock' ),
+			'tax class'     => array( '_tax_class' ),
+			'bare slug'     => array( 'pa_color' ),
+			'with a space'  => array( 'attribute_pa color' ),
+			'numeric'       => array( 7 ),
+		);
+	}
+
+	public function test_attribute_keys_are_kept() {
+		$variation = array(
+			'attribute_pa_color'    => 'red',
+			'attribute_gr%c3%b6sse' => 'M',
+		);
+		$snapshot  = CartSnapshot::fromArray( self::data( array( 'items' => array( self::item( array( 'variation' => $variation ) ) ) ) ) );
+
+		$this->assertSame( $variation, $snapshot->items()[0]['variation'] );
+	}
+
 	public function test_unknown_context_is_rejected() {
 		$this->expectException( \InvalidArgumentException::class );
 		CartSnapshot::fromArray( self::data( array( 'context' => 'basket' ) ) );
