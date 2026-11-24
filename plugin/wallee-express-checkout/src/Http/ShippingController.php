@@ -7,6 +7,7 @@
 
 namespace Wallee\ExpressCheckout\Http;
 
+use Wallee\ExpressCheckout\Order\TaxDestination;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Security\UrlSigner;
@@ -15,6 +16,7 @@ use Wallee\ExpressCheckout\Session\SessionRepository;
 use Wallee\ExpressCheckout\Session\SessionService;
 use Wallee\ExpressCheckout\Shipping\ShippingOptionsProvider;
 use Wallee\ExpressCheckout\Shipping\ShippingRateMapper;
+use Wallee\ExpressCheckout\Support\StateCode;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -30,6 +32,11 @@ final class ShippingController {
 	const RATE_MAX       = 60;
 	const RATE_WINDOW    = 60;
 	const MAX_FIELD      = 200;
+
+	/**
+	 * A shipping link is accepted for 2 hours after the session was created.
+	 */
+	const MAX_AGE_SECONDS = 7200;
 
 	/**
 	 * Session storage.
@@ -95,7 +102,7 @@ final class ShippingController {
 					new SessionRepository( $wpdb ),
 					UrlSigner::fromWordPress(),
 					new ShippingOptionsProvider(),
-					new RateLimiter(),
+					new RateLimiter( $wpdb ),
 					array( Plugin::adapter(), 'log' )
 				);
 				$controller->registerRoute();
@@ -137,8 +144,14 @@ final class ShippingController {
 	}
 
 	/**
-	 * Handles one callback. Order of checks: signature, row, state, body ids,
-	 * country, rate limit, calculation.
+	 * Handles one callback. Order of checks: signature, row, age, state, body
+	 * ids, country, rate limit, tax location, calculation.
+	 *
+	 * Taxes were fixed for the snapshot's tax location. Where WooCommerce
+	 * taxes by the shipping address, a destination with other tax rates than
+	 * that location (TaxDestination) gets no shipping options, so the wallet
+	 * cannot approve it. Where it taxes by the billing address, the callback
+	 * only knows the shipping destination: the return check decides.
 	 *
 	 * @param string $uuid Session UUID from the query.
 	 * @param string $sig  Signature from the query.
@@ -152,6 +165,9 @@ final class ShippingController {
 
 		$record = $this->repository->findByUuid( $uuid );
 		if ( null === $record ) {
+			return self::failure( 404, 'unknown_session' );
+		}
+		if ( $record->isOlderThan( self::MAX_AGE_SECONDS ) ) {
 			return self::failure( 404, 'unknown_session' );
 		}
 		if ( SessionRecord::CREATED !== $record->state() ) {
@@ -170,13 +186,24 @@ final class ShippingController {
 			return self::failure( 429, 'rate_limited' );
 		}
 
+		$country     = strtoupper( $body['countryCode'] );
 		$destination = array(
-			'country'   => strtoupper( $body['countryCode'] ),
-			'state'     => self::text( $body, 'state' ),
+			'country'   => $country,
+			'state'     => StateCode::normalise( $country, self::text( $body, 'state' ) ),
 			'postcode'  => self::text( $body, 'postalCode' ),
 			'city'      => self::text( $body, 'city' ),
 			'address_1' => self::text( $body, 'street' ),
 		);
+
+		if ( TaxDestination::BASIS_SHIPPING === TaxDestination::basis() && ! TaxDestination::sameRates( $record->snapshot(), $destination ) ) {
+			call_user_func( $this->log, sprintf( 'No shipping options for session row %d: destination taxed differently from the tax location.', $record->id() ) );
+			$named = 0 === strcasecmp( $destination['country'], $record->snapshot()->taxLocation()['country'] ) ? '' : $destination['country'];
+
+			return array(
+				'status' => 200,
+				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, Notices::walletDestination( $named ) ),
+			);
+		}
 
 		try {
 			$rates = $this->provider->ratesFor( $record->snapshot(), $destination );
@@ -192,7 +219,7 @@ final class ShippingController {
 
 			return array(
 				'status' => 200,
-				'body'   => ShippingRateMapper::error( $code, self::messageFor( $code ) ),
+				'body'   => ShippingRateMapper::error( $code, self::messageFor( $code, $destination['country'] ) ),
 			);
 		}
 
@@ -241,16 +268,17 @@ final class ShippingController {
 	}
 
 	/**
-	 * Customer-facing message for an error code.
+	 * Wallet message for an error code.
 	 *
-	 * @param string $code wallee error code.
+	 * @param string $code    wallee error code.
+	 * @param string $country ISO country code of the destination.
 	 */
-	private static function messageFor( string $code ): string {
+	private static function messageFor( string $code, string $country ): string {
 		if ( ShippingOptionsProvider::ERROR_COUNTRY === $code ) {
-			return __( 'We cannot ship to this address.', 'wallee-express-checkout' );
+			return Notices::walletDestination( $country );
 		}
 
-		return __( 'No shipping method is available for this address.', 'wallee-express-checkout' );
+		return Notices::walletNoShippingMethod();
 	}
 
 	/**

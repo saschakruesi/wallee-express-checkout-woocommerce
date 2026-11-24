@@ -67,11 +67,32 @@ class FakeOrderService extends OrderService {
 	public $failed = array();
 
 	/**
-	 * Calls of applyCustomer(): order ID, transaction, customer, quote country.
+	 * Calls of applyCustomer(): order ID, transaction, customer.
 	 *
 	 * @var array[]
 	 */
 	public $applied = array();
+
+	/**
+	 * Result of customerCoupons().
+	 *
+	 * @var string|null
+	 */
+	public $coupon_reason = null;
+
+	/**
+	 * Error customerCoupons() throws, if any.
+	 *
+	 * @var \Throwable|null
+	 */
+	public $coupon_error = null;
+
+	/**
+	 * Calls of customerCoupons(): the e-mail passed.
+	 *
+	 * @var string[]
+	 */
+	public $coupon_checks = array();
 
 	/**
 	 * E-mail applyCustomer() writes to the order.
@@ -79,6 +100,27 @@ class FakeOrderService extends OrderService {
 	 * @var string
 	 */
 	public $applied_email = 'buyer@example.test';
+
+	/**
+	 * Result of couponUsageRecorded().
+	 *
+	 * @var bool
+	 */
+	public $usage_recorded = false;
+
+	/**
+	 * Class of the orders create() returns.
+	 *
+	 * @var string
+	 */
+	public $order_class = \WC_Order::class;
+
+	/**
+	 * Called before create() returns the order, if set: function ( \WC_Order $order ).
+	 *
+	 * @var callable|null
+	 */
+	public $on_create = null;
 
 	/**
 	 * {@inheritDoc}
@@ -105,11 +147,15 @@ class FakeOrderService extends OrderService {
 			throw $this->create_error;
 		}
 		$total = null !== $this->next_total ? $this->next_total : $snapshot->total() + ( null === $rate ? 0 : $rate['cost'] + $rate['tax'] );
-		$order = new \WC_Order( $this->next_id, round( $total, 2 ) );
+		$class = $this->order_class;
+		$order = new $class( $this->next_id, round( $total, 2 ) );
 
 		$order->meta['_wallee_ec_session_uuid'] = $uuid;
 		$order->meta['_wallee_ec_session_id']   = $session_id;
 		$this->orders[ $order->get_id() ]        = $order;
+		if ( null !== $this->on_create ) {
+			call_user_func( $this->on_create, $order );
+		}
 
 		return $order;
 	}
@@ -126,18 +172,46 @@ class FakeOrderService extends OrderService {
 	}
 
 	/**
-	 * {@inheritDoc}
+	 * {@inheritDoc} Countries come from the transaction's addresses, each
+	 * falling back to the other, as in OrderFactory::applyCustomer().
 	 *
-	 * @param \WC_Order   $order         Order.
-	 * @param array       $transaction   Transaction.
-	 * @param int         $customer_id   Customer.
-	 * @param string|null $quote_country Country.
+	 * @param \WC_Order $order       Order.
+	 * @param array     $transaction Transaction.
+	 * @param int       $customer_id Customer.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
-		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id, $quote_country );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
+		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id );
 		$order->billing_email = $this->applied_email;
+		$shipping             = self::fields( $transaction, 'shippingAddress' );
+		$billing              = self::fields( $transaction, 'billingAddress' );
+		if ( '' === $shipping['country'] ) {
+			$shipping = $billing;
+		}
+		if ( '' === $billing['country'] ) {
+			$billing = $shipping;
+		}
+		foreach ( array( 'country', 'state', 'postcode', 'city' ) as $field ) {
+			$order->{'shipping_' . $field} = $shipping[ $field ];
+			$order->{'billing_' . $field}  = $billing[ $field ];
+		}
 
 		return '' !== $this->applied_email;
+	}
+
+	/**
+	 * Country, state, postcode and city of a transaction address.
+	 *
+	 * @param array  $transaction Transaction.
+	 * @param string $key         `billingAddress` or `shippingAddress`.
+	 */
+	private static function fields( array $transaction, string $key ): array {
+		$address = isset( $transaction[ $key ] ) && is_array( $transaction[ $key ] ) ? $transaction[ $key ] : array();
+		$fields  = array();
+		foreach ( array( 'country' => 'country', 'state' => 'postalState', 'postcode' => 'postcode', 'city' => 'city' ) as $field => $name ) {
+			$fields[ $field ] = isset( $address[ $name ] ) ? (string) $address[ $name ] : '';
+		}
+
+		return $fields;
 	}
 
 	/**
@@ -156,9 +230,33 @@ class FakeOrderService extends OrderService {
 	 * {@inheritDoc}
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param string       $email    E-mail.
 	 */
-	public function stockAndCoupons( CartSnapshot $snapshot, string $email ): ?string {
+	public function stockAndCoupons( CartSnapshot $snapshot ): ?string {
 		return $this->stock_reason;
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function couponUsageRecorded( \WC_Order $order ): bool {
+		return $this->usage_recorded;
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param string       $email    E-mail.
+	 * @throws \Throwable The scripted error.
+	 */
+	public function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
+		$this->coupon_checks[] = $email;
+		if ( null !== $this->coupon_error ) {
+			throw $this->coupon_error;
+		}
+
+		return $this->coupon_reason;
 	}
 }

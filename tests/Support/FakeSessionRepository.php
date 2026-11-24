@@ -63,7 +63,7 @@ class FakeSessionRepository extends SessionRepository {
 				'state'             => SessionRecord::CREATED,
 				'order_id'          => null,
 				'transaction_id'    => null,
-				'created_at'        => '2026-11-24 10:00:00',
+				'created_at'        => gmdate( 'Y-m-d H:i:s', time() - 60 ),
 				'shipping_quote'    => null,
 			),
 			$over

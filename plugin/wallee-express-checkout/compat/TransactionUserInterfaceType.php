@@ -34,6 +34,8 @@
 namespace Wallee\Sdk\Model;
 use \Wallee\Sdk\ObjectSerializer;
 
+defined( 'ABSPATH' ) || exit;
+
 /**
  * TransactionUserInterfaceType model
  *

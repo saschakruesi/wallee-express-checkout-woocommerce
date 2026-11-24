@@ -12,6 +12,12 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Cart\CartSnapshot;
 use Wallee\ExpressCheckout\Order\OrderValidator;
+use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
+
+require_once dirname( __DIR__, 2 ) . '/Support/wc-order-stub.php';
+require_once dirname( __DIR__, 2 ) . '/Support/wc-product-stub.php';
+require_once dirname( __DIR__, 2 ) . '/Support/wc-coupon-stub.php';
+require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
 
 /**
  * @covers \Wallee\ExpressCheckout\Order\OrderValidator
@@ -21,6 +27,12 @@ class OrderValidatorTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
+		\WC_Tax::reset();
+		Functions\when( 'get_option' )->alias(
+			static function ( $name, $fallback = false ) {
+				return 'woocommerce_shipping_tax_class' === $name ? 'inherit' : $fallback;
+			}
+		);
 		Functions\when( 'is_email' )->alias(
 			static function ( $email ) {
 				return false === filter_var( $email, FILTER_VALIDATE_EMAIL ) ? false : $email;
@@ -345,4 +357,147 @@ class OrderValidatorTest extends TestCase {
 		Functions\when( 'get_userdata' )->justReturn( false );
 		$this->assertNull( OrderValidator::email( array(), 7 ) );
 	}
+
+	public function test_environment_must_match_the_configured_one() {
+		$this->assertNull( OrderValidator::environment( array( 'authorizationEnvironment' => 'TEST' ), 'TEST' ) );
+		$this->assertNull( OrderValidator::environment( array( 'authorizationEnvironment' => 'PRODUCTION' ), 'PRODUCTION' ) );
+		$this->assertSame( 'environment_mismatch', OrderValidator::environment( array( 'authorizationEnvironment' => 'TEST' ), 'PRODUCTION' ) );
+		$this->assertSame( 'environment_mismatch', OrderValidator::environment( array( 'authorizationEnvironment' => 'PRODUCTION' ), 'TEST' ) );
+		$this->assertSame( 'environment_mismatch', OrderValidator::environment( array( 'authorizationEnvironment' => 'test' ), 'TEST' ) );
+		$this->assertSame( 'environment_mismatch', OrderValidator::environment( array(), 'TEST' ) );
+		$this->assertSame( 'environment_mismatch', OrderValidator::environment( array( 'authorizationEnvironment' => array( 'TEST' ) ), 'TEST' ) );
+	}
+
+	public function test_taxes_follow_the_address_unless_disabled_or_based_on_the_shop() {
+		Functions\when( 'wc_tax_enabled' )->justReturn( true );
+		foreach ( array( 'shipping' => true, 'billing' => true, 'base' => false ) as $basis => $expected ) {
+			Functions\when( 'get_option' )->justReturn( $basis );
+			$this->assertSame( $expected, OrderValidator::taxFollowsAddress(), $basis );
+		}
+		Functions\when( 'wc_tax_enabled' )->justReturn( false );
+		Functions\when( 'get_option' )->justReturn( 'shipping' );
+		$this->assertFalse( OrderValidator::taxFollowsAddress() );
+	}
+
+	public function test_destination_must_match_the_quote_country() {
+		$quote = array( 'destination' => array( 'country' => 'CH' ) );
+
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'CH', null ) );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'ch', self::address( 'CH' ) ) );
+		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), $quote, 'DE', null ) );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, '', self::address( 'DE' ) ), 'unknown country' );
+	}
+
+	public function test_the_tax_address_must_have_the_rates_of_the_tax_location_when_given() {
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'DE', null ), 'taxes do not follow the address' );
+		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), null, 'DE', self::address( 'DE' ) ) );
+		$this->assertSame(
+			'destination_changed',
+			OrderValidator::destination( $this->snapshot(), array( 'destination' => array( 'country' => 'DE' ) ), 'DE', self::address( 'DE' ) ),
+			'quote and address agree, but both are taxed differently'
+		);
+		$this->assertSame(
+			'destination_changed',
+			OrderValidator::destination( $this->snapshot(), array( 'destination' => array( 'country' => 'CH' ) ), 'CH', self::address( 'DE' ) ),
+			'billing-based taxes: the billing address is taxed differently'
+		);
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'CH', self::address( 'CH', 'BE' ) ), 'national rates' );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'CH', self::address( '' ) ), 'unknown tax address country' );
+	}
+
+	public function test_a_refusal_names_the_delivery_country_only_when_it_is_not_the_calculated_one() {
+		$quote = array( 'destination' => array( 'country' => 'CH' ) );
+
+		$this->assertSame( 'DE', OrderValidator::noticeCountry( $this->snapshot(), $quote, 'DE' ) );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), $quote, 'ch' ) );
+		$this->assertSame( 'AT', OrderValidator::noticeCountry( $this->snapshot(), null, 'AT' ), 'no quote: the tax location' );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), null, 'CH' ) );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), $quote, '' ) );
+	}
+
+	private static function address( string $country, string $state = '' ): array {
+		return array(
+			'country'  => $country,
+			'state'    => $state,
+			'postcode' => '',
+			'city'     => '',
+		);
+	}
+
+	/**
+	 * Snapshot with coupon `once` for a guest or a customer.
+	 *
+	 * @param int $customer_id Customer.
+	 */
+	private function coupon_snapshot( int $customer_id = 0 ): CartSnapshot {
+		return CartSnapshot::fromArray(
+			CartSnapshotTest::data(
+				array(
+					'coupons'     => array( 'once' ),
+					'customer_id' => $customer_id,
+				)
+			)
+		);
+	}
+
+	private function coupon_world( array $coupon ): void {
+		\WC_Coupon::$registry = array( 'once' => array_merge( array( 'id' => 5 ), $coupon ) );
+		Functions\when( 'wc_get_product' )->alias(
+			static function ( $id ) {
+				return new \WC_Product( array( 'id' => $id ) );
+			}
+		);
+		Functions\when( 'sanitize_email' )->returnArg();
+	}
+
+	public function test_an_email_restricted_coupon_is_deferred_until_the_email_is_known() {
+		$this->coupon_world( array( 'email_restrictions' => array( '*@example.test' ) ) );
+
+		$this->assertNull( OrderValidator::stockAndCoupons( $this->coupon_snapshot() ), 'accepted before the e-mail is known' );
+		$this->assertNull( OrderValidator::customerCoupons( $this->coupon_snapshot(), 'Buyer@Example.test' ) );
+		$this->assertSame( 'coupon_invalid', OrderValidator::customerCoupons( $this->coupon_snapshot(), 'buyer@other.test' ) );
+		$this->assertSame( array( '*@example.test' ), ( new \WC_Coupon( 'once' ) )->get_email_restrictions(), 'the stored coupon is not changed' );
+	}
+
+	public function test_a_guest_who_used_up_the_per_user_limit_is_refused_by_email() {
+		$this->coupon_world(
+			array(
+				'usage_limit_per_user' => 1,
+				'usage_by_email'       => array( 'used@example.test' => 1 ),
+			)
+		);
+
+		$this->assertNull( OrderValidator::stockAndCoupons( $this->coupon_snapshot() ) );
+		$this->assertSame( 'coupon_invalid', OrderValidator::customerCoupons( $this->coupon_snapshot(), 'Used@Example.test' ) );
+		$this->assertNull( OrderValidator::customerCoupons( $this->coupon_snapshot(), 'new@example.test' ) );
+	}
+
+	public function test_a_customer_with_an_account_is_counted_by_woocommerce_per_user() {
+		$this->coupon_world(
+			array(
+				'usage_limit_per_user' => 1,
+				'usage_by_email'       => array( 'used@example.test' => 1 ),
+				'usage_by_user'        => array( 42 => 1 ),
+			)
+		);
+
+		$this->assertSame( 'coupon_invalid', OrderValidator::customerCoupons( $this->coupon_snapshot( 42 ), 'new@example.test' ) );
+		$this->assertNull( OrderValidator::customerCoupons( $this->coupon_snapshot( 43 ), 'used@example.test' ), 'accounts are not counted by e-mail' );
+	}
+
+	public function test_an_invalid_or_unknown_coupon_is_refused_in_both_checks() {
+		$this->coupon_world( array( 'valid' => false ) );
+		$this->assertSame( 'coupon_invalid', OrderValidator::stockAndCoupons( $this->coupon_snapshot() ) );
+		$this->assertSame( 'coupon_invalid', OrderValidator::customerCoupons( $this->coupon_snapshot(), 'a@example.test' ) );
+
+		$this->coupon_world( array( 'id' => 0 ) );
+		$this->assertSame( 'coupon_invalid', OrderValidator::customerCoupons( $this->coupon_snapshot(), 'a@example.test' ) );
+	}
+
+	public function test_no_coupons_need_no_lookup() {
+		Functions\expect( 'wc_get_product' )->never();
+
+		$this->assertNull( OrderValidator::customerCoupons( CartSnapshot::fromArray( CartSnapshotTest::data( array( 'coupons' => array() ) ) ), 'a@example.test' ) );
+	}
 }
+

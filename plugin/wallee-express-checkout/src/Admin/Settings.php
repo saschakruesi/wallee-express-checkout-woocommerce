@@ -111,6 +111,7 @@ class Settings {
 		add_action( 'woocommerce_admin_field_wallee_ec_configure', array( $instance, 'renderConfigure' ) );
 		add_filter( 'woocommerce_admin_settings_sanitize_option_' . self::OPT_APPLE, array( $instance, 'filterAppleOption' ), 10, 2 );
 		add_action( 'admin_notices', array( $instance, 'showResults' ) );
+		add_action( 'admin_notices', array( $instance, 'showTestEnvironmentNotice' ) );
 		add_action( 'admin_post_' . self::ACTION, array( $instance, 'handleConfigure' ) );
 	}
 
@@ -375,6 +376,35 @@ class Settings {
 				esc_html( (string) $result['message'] )
 			);
 		}
+	}
+
+	/**
+	 * Warning while the buttons are shown in the TEST environment, null
+	 * otherwise.
+	 *
+	 * @return string|null
+	 */
+	public function testEnvironmentNotice(): ?string {
+		if ( 'TEST' !== $this->environment() || ( ! $this->cartEnabled() && ! $this->productEnabled() ) ) {
+			return null;
+		}
+
+		return __( 'wallee Express Checkout runs in the TEST environment. Payments are simulated; do not ship goods for these orders.', 'wallee-express-checkout' );
+	}
+
+	/**
+	 * Shows the TEST environment warning on every admin page to users who
+	 * manage WooCommerce. It cannot be dismissed.
+	 */
+	public function showTestEnvironmentNotice(): void {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) { // phpcs:ignore WordPress.WP.Capabilities.Unknown
+			return;
+		}
+		$notice = $this->testEnvironmentNotice();
+		if ( null === $notice ) {
+			return;
+		}
+		printf( '<div class="notice notice-warning"><p>%s</p></div>', esc_html( $notice ) );
 	}
 
 	/**

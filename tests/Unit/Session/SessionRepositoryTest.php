@@ -304,4 +304,78 @@ class SessionRepositoryTest extends TestCase {
 		$this->assertCount( 1, $this->db->queries );
 		$this->assertMatchesRegularExpression( "/^DELETE FROM wp_wallee_ec_session WHERE created_at < '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}'$/", $this->db->queries[0] );
 	}
+
+	public function test_rows_of_an_order_are_read_with_their_personal_fields() {
+		$this->db->next_results = array(
+			array(
+				'id'                => '7',
+				'state'             => 'completed',
+				'wallee_session_id' => '335',
+				'transaction_id'    => '629017977',
+				'created_at'        => '2026-11-24 10:00:00',
+				'snapshot'          => json_encode( $this->snapshot()->toArray() ), // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+				'shipping_quote'    => '{"destination":{"country":"CH","state":"","postcode":"8001","city":"Zurich"},"rates":[]}',
+			),
+			array(
+				'id'                => '8',
+				'state'             => 'processed',
+				'wallee_session_id' => '336',
+				'transaction_id'    => null,
+				'created_at'        => '2026-11-24 11:00:00',
+				'snapshot'          => 'not json',
+				'shipping_quote'    => null,
+			),
+		);
+
+		$rows = $this->repo()->rowsForOrder( 501 );
+
+		$this->assertSame( "SELECT id, state, wallee_session_id, transaction_id, created_at, snapshot, shipping_quote FROM wp_wallee_ec_session WHERE order_id = 501 ORDER BY id", $this->db->queries[0] );
+		$this->assertSame(
+			array(
+				'id'                => 7,
+				'state'             => 'completed',
+				'wallee_session_id' => 335,
+				'transaction_id'    => 629017977,
+				'created_at'        => '2026-11-24 10:00:00',
+				'tax_location'      => array(
+					'country'  => 'CH',
+					'state'    => '',
+					'postcode' => '8000',
+					'city'     => 'Zurich',
+				),
+				'destination'       => array(
+					'country'  => 'CH',
+					'state'    => '',
+					'postcode' => '8001',
+					'city'     => 'Zurich',
+				),
+			),
+			$rows[0]
+		);
+		$this->assertSame( 8, $rows[1]['id'] );
+		$this->assertNull( $rows[1]['transaction_id'] );
+		$this->assertSame( array(), $rows[1]['tax_location'], 'an unreadable snapshot exports no location' );
+		$this->assertSame( array(), $rows[1]['destination'] );
+	}
+
+	public function test_rows_of_an_order_need_a_positive_order_id() {
+		$this->assertSame( array(), $this->repo()->rowsForOrder( 0 ) );
+		$this->assertSame( array(), $this->db->queries );
+	}
+
+	public function test_rows_of_an_order_are_deleted_only_in_the_given_states() {
+		$this->db->next_rows_affected = 2;
+
+		$this->assertSame( 2, $this->repo()->deleteForOrder( 501, array( 'completed', 'failed' ) ) );
+		$this->assertSame( "DELETE FROM wp_wallee_ec_session WHERE order_id = 501 AND state IN ('completed','failed')", $this->db->queries[0] );
+	}
+
+	public function test_delete_for_an_order_refuses_unknown_states_and_empty_input() {
+		$this->assertSame( 0, $this->repo()->deleteForOrder( 501, array() ) );
+		$this->assertSame( 0, $this->repo()->deleteForOrder( 0, array( 'failed' ) ) );
+		$this->assertSame( array(), $this->db->queries );
+
+		$this->expectException( \InvalidArgumentException::class );
+		$this->repo()->deleteForOrder( 501, array( "failed') OR ('1" ) );
+	}
 }

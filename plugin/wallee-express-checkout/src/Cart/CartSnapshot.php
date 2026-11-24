@@ -306,8 +306,13 @@ final class CartSnapshot {
 			throw new \InvalidArgumentException( 'Item must be an array.' );
 		}
 
+		// Only variation attribute keys: anything else would become order item
+		// meta, where some keys are internal properties of the line.
 		$variation = array();
 		foreach ( self::list_of( $item, 'variation', 'item.' ) as $attribute => $value ) {
+			if ( ! VariationAttributes::isAttributeKey( $attribute ) ) {
+				throw new \InvalidArgumentException( 'Variation keys must be attribute keys.' );
+			}
 			if ( ! is_scalar( $value ) ) {
 				throw new \InvalidArgumentException( 'Variation values must be scalars.' );
 			}

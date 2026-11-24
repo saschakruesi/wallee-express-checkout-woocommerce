@@ -195,3 +195,71 @@ Where this section and the text above disagree, this section wins.
    shipping address for such sessions and then rejects it. The filter
    `wallee_ec_allow_without_shipping` (default false) switches them back on
    once wallee has fixed the sheet.
+
+## Amendment 3 (security review, version 0.1.1)
+
+Where this section and the text above disagree, this section wins.
+
+1. **Variation data (product context).** A simple product accepts no
+   variation map. For a variation, only the parent's variation attributes
+   (`attribute_<slug>`) are accepted; each value must equal the variation's
+   own value or, where the variation has "any", be one of the parent's
+   options. The resolved set is what the snapshot stores. `CartSnapshot`
+   accepts only keys matching `/^attribute_[a-z0-9_%\-]{1,100}$/i` (cart
+   context and stored rows included). `OrderFactory` passes only those keys
+   to the order line and fails the order creation (no order remains) when a
+   built line does not refer to the snapshot's product and variation.
+2. **Environment.** The return handler requires the session's
+   `authorizationEnvironment` to equal the configured environment (reason
+   `environment_mismatch`: no order, no process). The order stores it as
+   `_wallee_ec_environment`; TEST orders get a private note. While TEST is
+   configured and a display switch is on, shop managers see a permanent
+   admin warning. The default stays TEST.
+3. **Coupons with the customer's e-mail** (replaces step 6's e-mail rule).
+   The check before the order ignores e-mail restrictions. After `process`,
+   once the transaction's customer data is on the order and before the
+   redirect, every coupon is validated again with that e-mail: WooCommerce's
+   coupon rules (global limit, per-user limit for accounts, e-mail
+   restrictions) and, for guests, the per-user limit counted by billing
+   e-mail. A failure takes the `no_email` path with reason `coupon_invalid`.
+4. **Destination and tax location** (replaces the private note of step 10
+   and design 5.7's note). When taxes are enabled and the tax basis is not
+   the shop base, the shipping callback answers `COUNTRY_UNAVAILABLE` for a
+   destination outside the snapshot's tax location (country, and state when
+   the location has one) and stores no quote. After `process`, an order
+   whose shipping (fallback billing) country differs from the quote's
+   country, or under the same tax condition from the tax location's
+   country, fails before the redirect (reason `destination_changed`, the
+   `no_email` path).
+5. **Rate limiting and sessions.** The per-client bucket is checked before
+   the global one, and only allowed requests count globally. The client is
+   `REMOTE_ADDR`, replaceable through the filter `wallee_ec_client_ip` for a
+   trusted proxy. No WooCommerce session or cookie is started for a caller
+   without one: a cart request is refused with `empty`, a product request is
+   served without reuse. Session responses carry no-cache headers.
+6. **Validation hooks.** Product context runs
+   `woocommerce_add_to_cart_validation` with WooCommerce's argument lists;
+   cart context runs the cart page checks (`woocommerce_check_cart_items`,
+   which includes `WC_Cart::check_cart_items`). A false result or a new
+   error notice refuses the session (`unavailable`); the notices are
+   removed again. Product context still has no cart-level fees.
+7. **Link lifetime.** Return and shipping requests for rows older than
+   2 hours (`created_at`) are refused (cart with the generic notice; the
+   shipping callback answers 404); result requests for rows older than
+   7 days go to the cart. The signature format is unchanged.
+8. **Protected products.** Product context refuses products with a post
+   password and products that are not published.
+9. **Redirect host.** The wallee redirect URL's host must equal the host of
+   the configured wallee base URL; otherwise the order fails before the
+   redirect (`redirect_host_mismatch`, the `no_email` path).
+   *Superseded (regression fix after 0.1.1):* wallets such as PayPal
+   complete the payment inside the wallet, and the redirect then is not on
+   the wallee host. The target is classified: wallee host → followed; shop
+   host → followed only if it is one of the two result URLs given to
+   process, else the success result URL; any other host → never followed,
+   the order is kept (success result URL) when the transaction or session
+   shows a payment under way or done (`redirect_host_unexpected`), and
+   fails only when nothing indicates a payment. After process, an order
+   whose transaction is AUTHORIZED, COMPLETED or FULFILL fails only for
+   `no_email`, `coupon_invalid` or `destination_changed`; technical reasons
+   never fail it.

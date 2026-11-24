@@ -10,7 +10,7 @@ namespace Wallee\ExpressCheckout\Cart;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Applies the prototype's refusal rules (design 5.7).
+ * Applies the add-on's refusal rules (design 5.7).
  */
 final class Eligibility {
 

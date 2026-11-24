@@ -51,6 +51,13 @@ class FakeWpdb extends \wpdb {
 	public $next_row = null;
 
 	/**
+	 * Rows returned by the next get_results() call.
+	 *
+	 * @var array
+	 */
+	public $next_results = array();
+
+	/**
 	 * Result of the next insert() call.
 	 *
 	 * @var int|false
@@ -127,6 +134,17 @@ class FakeWpdb extends \wpdb {
 	public function get_row( $query = null, $output = 'OBJECT', $y = 0 ) {
 		$this->queries[] = $query;
 		return $this->next_row;
+	}
+
+	/**
+	 * Records a SELECT of several rows.
+	 *
+	 * @param string $query  SQL.
+	 * @param string $output Output type.
+	 */
+	public function get_results( $query = null, $output = 'OBJECT' ) {
+		$this->queries[] = $query;
+		return $this->next_results;
 	}
 
 	/**

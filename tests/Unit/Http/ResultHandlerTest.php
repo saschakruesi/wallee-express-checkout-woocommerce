@@ -12,6 +12,7 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use Wallee\ExpressCheckout\Http\ResultHandler;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
+use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\OrderLinker;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Tests\Support\FakeApiClient;
@@ -153,13 +154,14 @@ class ResultHandlerTest extends TestCase {
 			$this->repository,
 			UrlSigner::fromWordPress(),
 			$this->orders,
-			new CustomerDetails( $this->api, $this->repository, $this->orders, $log ),
+			new CustomerDetails( $this->api, $this->repository, $this->orders, $log, false ),
 			new OrderLinker( $this->adapter ),
 			function ( $order_id ) {
 				$this->scheduled[] = $order_id;
 				return true;
 			},
-			$log
+			$log,
+			new FailedOrderSettlement( $this->api, $log )
 		);
 	}
 
@@ -249,6 +251,18 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'buyer@example.test', $this->order->get_billing_email() );
 	}
 
+	public function test_success_repeats_the_checks_skipped_at_return_and_keeps_the_paid_order() {
+		$this->order->meta[ CustomerDetails::META_CHECKS_PENDING ] = 'yes';
+		$this->orders->coupon_reason                                = 'coupon_invalid';
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertSame( array( 'getSession', 'getTransaction' ), $this->api->methods(), 'transaction and e-mail known, but checks pending' );
+		$this->assertSame( array( 'ACTION REQUIRED: check before shipping (coupon_invalid).' ), $this->order->notes );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( array( 501 ), $this->adapter->links );
+	}
+
 	public function test_success_when_step_ten_fails_still_shows_order_received() {
 		$this->order->billing_email = '';
 		$this->api->sessions        = array( new \RuntimeException( 'timeout' ) );
@@ -288,7 +302,7 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'failed', $this->order->get_status() );
 		$this->assertArrayHasKey( 501, $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
-		$this->assertSame( array( 'error: The payment was not completed.' ), $this->notices );
+		$this->assertSame( array( 'error: The payment was not completed. You have not been charged. Please try again or choose another payment method.' ), $this->notices );
 		$this->assertSame( 0, $this->cart->emptied );
 	}
 
@@ -299,6 +313,7 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( 'processing', $this->order->get_status() );
 		$this->assertSame( array(), $this->orders->failed );
 		$this->assertSame( 'failed', $this->repository->row['state'] );
+		$this->assertSame( array( 'error: The payment was not completed. If an amount was reserved, it will be released. Please try again or choose another payment method.' ), $this->notices, 'a paid order: no "not charged"' );
 	}
 
 	public function test_failure_after_completion_changes_nothing() {
@@ -352,6 +367,56 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
 		$this->assertSame( array(), $this->repository->calls );
 		$this->assertSame( array(), $this->adapter->links );
+		$this->assertSame( array(), $this->api->calls, 'no owner failure on the order: nothing read' );
+	}
+
+	public function test_success_for_an_order_failed_for_an_owner_reason_voids_an_authorization() {
+		$this->repository     = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'destination_changed' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'AUTHORIZED',
+		);
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$this->assertSame( 'failed', $this->order->status );
+		$this->assertSame( array(), $this->adapter->links, 'not linked' );
+		$this->assertSame( array( 'error: Express checkout is not available for the selected delivery address. The reservation on your payment method is being released. You will not be charged. Please use the regular checkout to complete your order.' ), $this->notices );
+	}
+
+	public function test_success_for_a_processed_row_whose_order_the_background_failed_is_not_linked() {
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'no_email' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'AUTHORIZED',
+		);
+
+		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
+
+		$this->assertSame( array(), $this->adapter->links, 'not linked' );
+		$this->assertContains( array( 'voidTransaction', 629017977 ), $this->api->calls );
+		$this->assertSame( 'failed', $this->order->status );
+		$this->assertStringContainsString( 'The reservation on your payment method is being released.', $this->notices[0] );
+	}
+
+	public function test_success_for_an_order_failed_for_an_owner_reason_with_money_taken_says_so() {
+		$this->repository     = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->order->status  = 'failed';
+		FailedOrderSettlement::markFailed( $this->order, 'coupon_invalid' );
+		$this->api->transaction = array(
+			'id'    => 629017977,
+			'state' => 'COMPLETED',
+		);
+
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertStringContainsString( 'A refund is needed', $this->order->notes[0] );
+		$this->assertSame( array( 'error: Your payment was received, but we could not complete your order automatically. Please do not pay again. We will contact you about order 501.' ), $this->notices );
 	}
 
 	public function test_row_without_order_returns_cart() {
@@ -360,4 +425,40 @@ class ResultHandlerTest extends TestCase {
 		$this->assertSame( self::CART, $this->handler()->handle( $this->query( 'success' ) ) );
 		$this->assertSame( array(), $this->repository->calls );
 	}
+
+	public function test_a_link_older_than_seven_days_goes_to_the_cart_and_changes_nothing() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 604801 );
+
+		foreach ( array( 'success', 'failure' ) as $status ) {
+			$this->assertSame( self::CART, $this->handler()->handle( $this->query( $status ) ) );
+		}
+		$this->assertSame( 'processed', $this->repository->row['state'] );
+		$this->assertSame( 'pending', $this->order->get_status() );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( array(), $this->adapter->links );
+		$this->assertCount( 2, $this->notices );
+	}
+
+	public function test_a_link_six_days_old_still_works() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 6 * 86400 );
+
+		$this->assertSame( self::RECEIVED, $this->handler()->handle( $this->query( 'success' ) ) );
+	}
+	public function test_failures_without_a_known_outcome_get_the_uncertain_wording() {
+		$this->repository = $this->row( 'cart', array( 'state' => 'failed' ) );
+		$this->handler()->handle( $this->query( 'success' ) );
+		$this->handler()->handle( $this->query( 'success', 'failure' ) );
+
+		$technical = 'error: The express payment could not be completed because of a technical problem. If an amount was reserved, it will be released. Please try again or use the regular checkout.';
+		$this->assertSame( array( $technical, $technical ), $this->notices );
+	}
+
+	public function test_an_expired_result_link_gets_the_expiry_notice_with_the_uncertain_wording() {
+		$this->repository->row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 604801 );
+
+		$this->handler()->handle( $this->query( 'success' ) );
+
+		$this->assertSame( array( 'error: Your express payment session has expired. If an amount was reserved, it will be released. Please start the express payment again.' ), $this->notices );
+	}
 }
+

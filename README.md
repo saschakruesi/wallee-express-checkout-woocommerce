@@ -2,9 +2,13 @@
 
 WooCommerce add-on that shows wallet buttons (wallee Express Checkout) on the cart page and on product pages. It has no credentials of its own and works on top of the wallee main plugin.
 
-**This is a prototype.** It has been built and tested on a staging shop with the Bogus Pay test wallet only. Not for production.
+Version 1.0.0. It has been built and tested on a staging shop in wallee's TEST environment with the Bogus Pay test wallet only; see "Known limits" in `plugin/wallee-express-checkout/readme.txt` before using it in production.
 
 Verified on staging so far (owner's runs with Bogus Pay, orders #25 to #28): cart purchases end on the order-received page; the order goes Pending payment -> On hold (AUTHORIZED webhook) -> Processing (FULFILL); the payment method is resolved to the main plugin's gateway (`wallee_7`); the main plugin's transaction record is linked; addresses and e-mail come from the wallet; the failure path sets the order to Failed; the SDK shim lets the main plugin's webhooks process these transactions. Not yet verified end to end: refunds, completion and void (e2e cases 9, 10), reloads (8, 18), main plugin deactivated (14), session renewal (17) and the background link when the browser never returns (19). See `docs/testing/e2e-checklist.md`.
+
+## Security
+
+Version 0.1.0 has known security weaknesses; 1.0.0 fixes them. See the "Security" section and the changelog in `plugin/wallee-express-checkout/readme.txt`, and "Amendment 3" in `docs/superpowers/specs/2026-11-24-design-amendment-1.md` for the behaviour. The default environment is Test: the add-on shows a permanent admin warning while it runs in Test with buttons switched on.
 
 ## Layout
 
@@ -15,7 +19,7 @@ Verified on staging so far (owner's runs with Bogus Pay, orders #25 to #28): car
 | `bin/test`, `bin/lint` | Run tests and lint in Docker |
 | `infra/aws/` | Staging provisioning: `provision.sh`, `teardown.sh`, `user-data.sh`, `instance-env.sh`, `lib.sh` |
 | `infra/bin/` | `deploy`, `wp`, `remote`: operate the staging instance |
-| `infra/wordpress/` | Shop provisioning (`provision-shop.sh`), seed data (`seed-shop.php`) |
+| `infra/wordpress/` | Shop provisioning (`provision-shop.sh`), seed data (`seed-shop.php`), staging-only must-use plugins (`mu-plugins/`: hardening, client address behind CloudFront) |
 | `infra/docker-compose.yml` | WordPress, MariaDB and WP-CLI on the instance |
 | `docs/` | Design, amendment, spike findings, test checklist (see below) |
 | `.github/workflows/ci.yml` | CI: PHPUnit, PHPCS, PHP lint on PHP 7.4 and 8.2 |

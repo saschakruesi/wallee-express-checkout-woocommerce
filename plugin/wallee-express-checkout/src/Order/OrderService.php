@@ -12,7 +12,8 @@ use Wallee\ExpressCheckout\Cart\CartSnapshot;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Thin instance wrapper around OrderFactory, OrderValidator::stockAndCoupons
+ * Thin instance wrapper around OrderFactory, the WooCommerce checks of
+ * OrderValidator
  * and wc_get_order, so the handlers can be unit tested with a double. Holds
  * no logic of its own.
  */
@@ -66,23 +67,58 @@ class OrderService {
 	/**
 	 * See OrderFactory::applyCustomer().
 	 *
-	 * @param \WC_Order   $order         Order.
-	 * @param array       $transaction   Transaction with addresses expanded.
-	 * @param int         $customer_id   WordPress user ID, 0 for guests.
-	 * @param string|null $quote_country Country the shipping rate was calculated for.
+	 * @param \WC_Order $order       Order.
+	 * @param array     $transaction Transaction with addresses expanded.
+	 * @param int       $customer_id WordPress user ID, 0 for guests.
 	 * @return bool Whether the order now has a billing e-mail.
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, ?string $quote_country ): bool {
-		return OrderFactory::applyCustomer( $order, $transaction, $customer_id, $quote_country );
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
+		return OrderFactory::applyCustomer( $order, $transaction, $customer_id );
 	}
 
 	/**
 	 * See OrderValidator::stockAndCoupons().
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param string       $email    E-mail, empty if unknown.
 	 */
-	public function stockAndCoupons( CartSnapshot $snapshot, string $email ): ?string {
-		return OrderValidator::stockAndCoupons( $snapshot, $email );
+	public function stockAndCoupons( CartSnapshot $snapshot ): ?string {
+		return OrderValidator::stockAndCoupons( $snapshot );
+	}
+
+	/**
+	 * Whether WooCommerce has already counted the order's coupon usage (it
+	 * does when the order becomes on-hold, processing or completed). A coupon
+	 * check after that counts the order's own use.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public function couponUsageRecorded( \WC_Order $order ): bool {
+		$store = method_exists( $order, 'get_data_store' ) ? $order->get_data_store() : null;
+		if ( ! is_object( $store ) || ! is_callable( array( $store, 'get_recorded_coupon_usage_counts' ) ) ) {
+			return false;
+		}
+
+		return (bool) $store->get_recorded_coupon_usage_counts( $order );
+	}
+
+	/**
+	 * See CouponHold::hold(), for the snapshot's coupons.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param \WC_Order    $order    Order with the customer's e-mail applied.
+	 * @return array{0: string, 1: string} CouponHold outcome and detail.
+	 */
+	public function holdCoupons( CartSnapshot $snapshot, \WC_Order $order ): array {
+		return CouponHold::hold( $snapshot->coupons(), $order );
+	}
+
+	/**
+	 * See OrderValidator::customerCoupons().
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param string       $email    Billing e-mail of the order.
+	 */
+	public function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
+		return OrderValidator::customerCoupons( $snapshot, $email );
 	}
 }

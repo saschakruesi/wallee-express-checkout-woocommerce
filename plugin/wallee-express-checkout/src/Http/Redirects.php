@@ -59,11 +59,4 @@ final class Redirects {
 		wp_safe_redirect( $url );
 		exit;
 	}
-
-	/**
-	 * Notice for every failure the customer cannot do anything specific about.
-	 */
-	public static function genericNotice(): string {
-		return __( 'Your express payment could not be completed. Please try again or choose another payment method.', 'wallee-express-checkout' );
-	}
 }

@@ -14,12 +14,26 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $total;
 		public $status               = 'pending';
 		public $billing_email        = '';
+		public $billing_country      = '';
+		public $shipping_country     = '';
+		public $billing_state        = '';
+		public $billing_postcode     = '';
+		public $billing_city         = '';
+		public $shipping_state       = '';
+		public $shipping_postcode    = '';
+		public $shipping_city        = '';
 		public $payment_method       = 'wallee_express_checkout';
 		public $payment_method_title = 'wallee Express Checkout';
 		public $created_via          = 'wallee_express_checkout';
 		public $meta                 = array();
 		public $notes                = array();
 		public $saves                = 0;
+		public $meta_saves           = 0;
+		public $currency             = '';
+		public $customer_id          = 0;
+		public $products             = array();
+		public $save_error           = null;
+		public $data_store           = null;
 
 		public function __construct( int $id = 0, $total = 0.0 ) {
 			$this->id    = $id;
@@ -28,6 +42,10 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 
 		public function get_id() {
 			return $this->id;
+		}
+
+		public function get_order_number() {
+			return (string) $this->id;
 		}
 
 		public function get_total() {
@@ -44,6 +62,59 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 
 		public function get_billing_email() {
 			return $this->billing_email;
+		}
+
+		public function set_billing_email( $email ) {
+			$this->billing_email = $email;
+		}
+
+		public function set_currency( $currency ) {
+			$this->currency = $currency;
+		}
+
+		public function set_customer_id( $id ) {
+			$this->customer_id = $id;
+		}
+
+		public function get_customer_id() {
+			return $this->customer_id;
+		}
+
+		public function add_product( $product, $quantity = 1, $args = array() ) {
+			$this->products[] = array( $product, $quantity, $args );
+			return count( $this->products );
+		}
+
+		public function get_billing_country() {
+			return $this->billing_country;
+		}
+
+		public function get_shipping_country() {
+			return $this->shipping_country;
+		}
+
+		public function get_billing_state() {
+			return $this->billing_state;
+		}
+
+		public function get_billing_postcode() {
+			return $this->billing_postcode;
+		}
+
+		public function get_billing_city() {
+			return $this->billing_city;
+		}
+
+		public function get_shipping_state() {
+			return $this->shipping_state;
+		}
+
+		public function get_shipping_postcode() {
+			return $this->shipping_postcode;
+		}
+
+		public function get_shipping_city() {
+			return $this->shipping_city;
 		}
 
 		public function get_created_via() {
@@ -84,8 +155,30 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		}
 
 		public function save() {
+			if ( null !== $this->save_error ) {
+				throw $this->save_error;
+			}
 			++$this->saves;
 			return $this->id;
+		}
+
+		public function save_meta_data() {
+			if ( null !== $this->save_error ) {
+				throw $this->save_error;
+			}
+			++$this->meta_saves;
+		}
+
+		public function update_status( $status, $note = '' ) {
+			$this->status = $status;
+			if ( '' !== $note ) {
+				$this->notes[] = $note;
+			}
+			return true;
+		}
+
+		public function get_data_store() {
+			return $this->data_store;
 		}
 
 		public function get_checkout_order_received_url() {

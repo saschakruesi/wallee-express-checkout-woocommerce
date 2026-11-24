@@ -45,6 +45,11 @@ wp plugin is-active woo-wallee || wp plugin activate woo-wallee
 wp theme is-installed storefront || wp theme install storefront
 wp theme activate storefront
 
+# Staging-only must-use plugins (hardening; client address behind CloudFront). Copied, so re-run
+# this script (or just this step) after changing them.
+dc --profile tools run --rm -T wpcli sh -c \
+  'mkdir -p /var/www/html/wp-content/mu-plugins && cp /seed/mu-plugins/*.php /var/www/html/wp-content/mu-plugins/'
+
 wp option update admin_email admin@example.com >/dev/null
 wp eval-file /seed/seed-shop.php
 wp rewrite flush >/dev/null

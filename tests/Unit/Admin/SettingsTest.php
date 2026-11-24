@@ -159,6 +159,53 @@ class SettingsTest extends TestCase {
 		$this->assertFalse( has_filter( 'woocommerce_get_settings_checkout' ) );
 	}
 
+	public function test_test_environment_warning_while_buttons_are_shown() {
+		Functions\when( '__' )->returnArg();
+
+		$this->stub_options( array( 'wallee_ec_cart_enabled' => 'yes' ) );
+		$this->assertSame(
+			'wallee Express Checkout runs in the TEST environment. Payments are simulated; do not ship goods for these orders.',
+			( new Settings() )->testEnvironmentNotice()
+		);
+		$this->stub_options( array( 'wallee_ec_product_enabled' => 'yes' ) );
+		$this->assertNotNull( ( new Settings() )->testEnvironmentNotice() );
+
+		$this->stub_options( array() );
+		$this->assertNull( ( new Settings() )->testEnvironmentNotice(), 'no buttons, no warning' );
+		$this->stub_options(
+			array(
+				'wallee_ec_cart_enabled' => 'yes',
+				'wallee_ec_environment'  => 'PRODUCTION',
+			)
+		);
+		$this->assertNull( ( new Settings() )->testEnvironmentNotice(), 'production' );
+	}
+
+	public function test_test_environment_warning_is_shown_to_shop_managers_and_cannot_be_dismissed() {
+		Functions\when( '__' )->returnArg();
+		Functions\when( 'esc_html' )->returnArg();
+		$this->stub_options( array( 'wallee_ec_cart_enabled' => 'yes' ) );
+		if ( ! defined( 'WALLEE_EC_FILE' ) ) {
+			define( 'WALLEE_EC_FILE', '/plugins/wallee-express-checkout/wallee-express-checkout.php' );
+		}
+		Functions\when( 'plugin_basename' )->justReturn( 'wallee-express-checkout/wallee-express-checkout.php' );
+		Settings::register();
+		$this->assertNotFalse( has_action( 'admin_notices', 'Wallee\ExpressCheckout\Admin\Settings->showTestEnvironmentNotice()' ) );
+
+		Functions\when( 'current_user_can' )->justReturn( true );
+		ob_start();
+		( new Settings() )->showTestEnvironmentNotice();
+		$html = (string) ob_get_clean();
+		$this->assertStringContainsString( 'notice-warning', $html );
+		$this->assertStringContainsString( 'runs in the TEST environment', $html );
+		$this->assertStringNotContainsString( 'is-dismissible', $html );
+
+		Functions\when( 'current_user_can' )->justReturn( false );
+		ob_start();
+		( new Settings() )->showTestEnvironmentNotice();
+		$this->assertSame( '', ob_get_clean() );
+	}
+
 	public function test_settings_link_points_to_the_tab() {
 		Functions\when( 'admin_url' )->alias(
 			static function ( $path ) {

@@ -10,6 +10,7 @@ namespace Wallee\ExpressCheckout\Order;
 use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
 use Wallee\ExpressCheckout\Plugin;
+use Wallee\ExpressCheckout\Session\SessionRecord;
 use Wallee\ExpressCheckout\Session\SessionRepository;
 
 defined( 'ABSPATH' ) || exit;
@@ -19,7 +20,9 @@ defined( 'ABSPATH' ) || exit;
  * review I1): after the process call an Action Scheduler job links the order
  * even when the customer's browser never comes back. It retries with back-off
  * and, after the last attempt, leaves the admin note. Viewing a not yet
- * linked express order in the admin tries once more.
+ * linked express order in the admin tries once more. For an order that
+ * failed for an owner-decided reason the same job settles the money instead
+ * of linking (FailedOrderSettlement).
  */
 final class LinkScheduler {
 
@@ -79,22 +82,31 @@ final class LinkScheduler {
 	private $log;
 
 	/**
+	 * Settles the money of orders failed for an owner-decided reason.
+	 *
+	 * @var FailedOrderSettlement
+	 */
+	private $settlement;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param OrderService      $orders     Order operations.
-	 * @param CustomerDetails   $details    Transaction details.
-	 * @param OrderLinker       $linker     Link to the main plugin.
-	 * @param SessionRepository $repository Session storage.
-	 * @param callable          $schedule   Scheduler, see self::scheduleAttempt().
-	 * @param callable          $log        Logger: function ( string $message, string $level ).
+	 * @param OrderService          $orders     Order operations.
+	 * @param CustomerDetails       $details    Transaction details.
+	 * @param OrderLinker           $linker     Link to the main plugin.
+	 * @param SessionRepository     $repository Session storage.
+	 * @param callable              $schedule   Scheduler, see self::scheduleAttempt().
+	 * @param callable              $log        Logger: function ( string $message, string $level ).
+	 * @param FailedOrderSettlement $settlement Settles the money of orders failed for an owner-decided reason.
 	 */
-	public function __construct( OrderService $orders, CustomerDetails $details, OrderLinker $linker, SessionRepository $repository, callable $schedule, callable $log ) {
+	public function __construct( OrderService $orders, CustomerDetails $details, OrderLinker $linker, SessionRepository $repository, callable $schedule, callable $log, FailedOrderSettlement $settlement ) {
 		$this->orders     = $orders;
 		$this->details    = $details;
 		$this->linker     = $linker;
 		$this->repository = $repository;
 		$this->schedule   = $schedule;
 		$this->log        = $log;
+		$this->settlement = $settlement;
 	}
 
 	/**
@@ -105,7 +117,11 @@ final class LinkScheduler {
 		add_action(
 			self::HOOK,
 			static function ( $order_id ) {
-				self::fromWordPress()->run( (int) $order_id );
+				try {
+					self::fromWordPress()->run( (int) $order_id );
+				} catch ( \Throwable $e ) {
+					Plugin::adapter()->log( sprintf( 'Order %d: background link job failed (%s).', (int) $order_id, get_class( $e ) ), 'error' );
+				}
 			}
 		);
 		add_action(
@@ -131,7 +147,15 @@ final class LinkScheduler {
 		$orders     = new OrderService();
 		$log        = array( $adapter, 'log' );
 
-		return new self( $orders, new CustomerDetails( $api, $repository, $orders, $log ), new OrderLinker( $adapter ), $repository, array( self::class, 'scheduleAttempt' ), $log );
+		return new self(
+			$orders,
+			new CustomerDetails( $api, $repository, $orders, $log, OrderValidator::taxFollowsAddress() ),
+			new OrderLinker( $adapter ),
+			$repository,
+			array( self::class, 'scheduleAttempt' ),
+			$log,
+			new FailedOrderSettlement( $api, $log )
+		);
 	}
 
 	/**
@@ -167,25 +191,46 @@ final class LinkScheduler {
 
 	/**
 	 * One scheduled attempt. Schedules the next one with back-off while the
-	 * order is not linked; the last attempt flags the order instead.
+	 * order is not linked; the last attempt flags the order instead. An
+	 * unexpected error inside the attempt is logged (class only) and counts
+	 * as a failed attempt, so the chain goes on within the attempt limit.
+	 * Without a saved attempt counter there is no limit, so the chain stops
+	 * then, with an error log.
 	 *
 	 * @param int $order_id Order ID.
 	 */
 	public function run( int $order_id ): void {
 		$order = $this->orders->find( $order_id );
-		if ( null === $order || ! self::awaitsLink( $order ) ) {
+		if ( null === $order || ! self::awaitsLink( $order ) || OrderLinker::paymentEnded( $order ) ) {
 			return;
 		}
 
 		$attempt = max( 0, (int) $order->get_meta( self::META_ATTEMPTS ) ) + 1;
-		$order->update_meta_data( self::META_ATTEMPTS, $attempt );
-		$order->save();
-		$last = $attempt >= count( self::DELAYS );
+		$counted = true;
+		try {
+			$order->update_meta_data( self::META_ATTEMPTS, $attempt );
+			$order->save();
+		} catch ( \Throwable $e ) {
+			$counted = false;
+			$this->log( sprintf( 'Order %d: link attempt counter not saved (%s); no further automatic attempt.', $order_id, get_class( $e ) ), 'error' );
+		}
+		$last = ! $counted || $attempt >= count( self::DELAYS );
 
-		if ( $this->resolve( $order, $last ) ) {
+		try {
+			$done = $this->resolve( $order, $last );
+		} catch ( \Throwable $e ) {
+			$done = false;
+			$this->log( sprintf( 'Order %d: link attempt %d stopped by an error (%s).', $order_id, $attempt, get_class( $e ) ), 'error' );
+		}
+		if ( $done || ! $counted ) {
 			return;
 		}
 		if ( $last ) {
+			if ( '' !== FailedOrderSettlement::failedReason( $order ) ) {
+				$this->log( sprintf( 'Order %d: payment of the failed order still undecided after %d attempts.', $order_id, $attempt ), 'warning' );
+
+				return;
+			}
 			$this->log( sprintf( 'Order %d: not linked after %d attempts.', $order_id, $attempt ), 'error' );
 
 			return;
@@ -201,7 +246,7 @@ final class LinkScheduler {
 	 * @param mixed $order Order passed by the hook.
 	 */
 	public function retryNow( $order ): void {
-		if ( $order instanceof \WC_Order && self::awaitsLink( $order ) ) {
+		if ( $order instanceof \WC_Order && self::awaitsLink( $order ) && ! OrderLinker::paymentEnded( $order ) ) {
 			$this->resolve( $order, false );
 		}
 	}
@@ -216,24 +261,44 @@ final class LinkScheduler {
 	}
 
 	/**
-	 * Finds the transaction if needed, then links.
+	 * Finds the transaction if needed, then links. An order that failed for
+	 * an owner-decided reason is never linked: its money is settled instead
+	 * (an authorisation is voided, taken money flagged for a refund).
 	 *
 	 * @param \WC_Order $order Order.
 	 * @param bool      $last  Whether this is the last attempt.
-	 * @return bool Whether the order is linked.
+	 * @return bool Whether nothing is left to do: the order is linked, or a failed order is settled.
 	 */
 	private function resolve( \WC_Order $order, bool $last ): bool {
+		if ( '' !== FailedOrderSettlement::failedReason( $order ) ) {
+			try {
+				return FailedOrderSettlement::OPEN !== $this->settlement->settleFailedOrder( $order );
+			} catch ( \Throwable $e ) {
+				$this->log( sprintf( 'Order %d: transaction of the failed order not read (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+
+				return false;
+			}
+		}
+
 		$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
-		if ( $transaction_id <= 0 ) {
+		if ( $transaction_id <= 0 || CustomerDetails::checksPending( $order ) ) {
+			$record    = null;
+			$collected = null;
 			try {
 				$record = $this->repository->findByUuid( (string) $order->get_meta( OrderFactory::META_SESSION ) );
 				if ( null !== $record ) {
-					$this->details->collectAfterPayment( $record, $order );
+					$collected = $this->details->collectAfterPayment( $record, $order, true );
 				} else {
 					$this->details->transactionFromSessionId( $order );
 				}
 			} catch ( \Throwable $e ) {
 				$this->log( sprintf( 'Order %d: transaction not read (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+			}
+			if ( null !== $record && null !== $collected && ! $collected['email'] ) {
+				if ( $order->has_status( array( 'pending', 'on-hold' ) ) ) {
+					return $this->failWithoutEmail( $record, $order, $collected['transaction_id'], $collected['state'] );
+				}
+				$this->noteWithoutEmail( $order );
 			}
 			$transaction_id = (int) $order->get_meta( CustomerDetails::META_TRANSACTION );
 		}
@@ -246,7 +311,62 @@ final class LinkScheduler {
 			return false;
 		}
 
-		return $this->linker->link( $order, $transaction_id, $last );
+		return $this->linker->link( $order, $transaction_id, $last, true ) || OrderLinker::paymentEnded( $order );
+	}
+
+	/**
+	 * The owner-decided rule for a missing e-mail, applied in the background
+	 * as at the return: wallee gave no e-mail address once the transaction
+	 * could be read (it authorised after the customer's browser left), so
+	 * an order still pending or on-hold fails for `no_email` whatever the
+	 * payment state, and its money is settled like at the return (a
+	 * reservation is voided, taken
+	 * money gets the refund note, an undecided payment is checked again).
+	 * The order is not linked.
+	 *
+	 * @param SessionRecord $record         Row.
+	 * @param \WC_Order     $order          Order.
+	 * @param int           $transaction_id wallee transaction ID.
+	 * @param string        $state          Transaction state, '' if unknown.
+	 * @return bool Whether nothing is left to do (the payment is settled).
+	 */
+	private function failWithoutEmail( SessionRecord $record, \WC_Order $order, int $transaction_id, string $state ): bool {
+		$reason = 'no_email';
+		$this->log( sprintf( 'Order %d: no e-mail address from wallee (transaction %d, state %s); order failed (%s).', $order->get_id(), $transaction_id, '' === $state ? 'unknown' : $state, $reason ), 'error' );
+		try {
+			$this->orders->fail( $order, $reason );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Order %d could not be set to failed (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
+		try {
+			FailedOrderSettlement::markFailed( $order, $reason );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Order %d: failure reason not saved (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
+		try {
+			$this->repository->update( $record->id(), array( 'state' => SessionRecord::FAILED ) );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Session row %d could not be set to failed (%s).', $record->id(), get_class( $e ) ), 'error' );
+		}
+
+		return FailedOrderSettlement::OPEN !== $this->settlement->settle( $order, $transaction_id, $state );
+	}
+
+	/**
+	 * No e-mail address for an order that is no longer pending or on-hold
+	 * (for example processing or completed by the main plugin's webhook):
+	 * one private note, no status change, no void.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	private function noteWithoutEmail( \WC_Order $order ): void {
+		$status = preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $order->get_status() ) );
+		$this->log( sprintf( 'Order %d: no e-mail address from wallee; order is %s, not failed.', $order->get_id(), $status ), 'warning' );
+		try {
+			$this->orders->addNoteOnce( $order, __( 'ACTION REQUIRED: no e-mail address received for this order.', 'wallee-express-checkout' ) );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Order %d: note not added (%s).', $order->get_id(), get_class( $e ) ), 'error' );
+		}
 	}
 
 	/**

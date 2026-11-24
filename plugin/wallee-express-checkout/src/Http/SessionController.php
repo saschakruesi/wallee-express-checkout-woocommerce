@@ -79,9 +79,36 @@ final class SessionController {
 			'rest_api_init',
 			static function () {
 				global $wpdb;
-				( new self( new RateLimiter(), new SessionRepository( $wpdb ) ) )->registerRoute();
+				( new self( new RateLimiter( $wpdb ), new SessionRepository( $wpdb ) ) )->registerRoute();
 			}
 		);
+		add_filter( 'rest_post_dispatch', array( self::class, 'noCache' ), 10, 3 );
+	}
+
+	/**
+	 * `rest_post_dispatch` filter: every response of the session route,
+	 * refusals and errors included, must not be cached.
+	 *
+	 * @param mixed            $response Response.
+	 * @param mixed            $server   REST server.
+	 * @param \WP_REST_Request $request  Request.
+	 * @return mixed
+	 */
+	public static function noCache( $response, $server, $request ) {
+		unset( $server );
+		if ( ! $response instanceof \WP_REST_Response || ! is_object( $request ) || ! method_exists( $request, 'get_route' ) ) {
+			return $response;
+		}
+		if ( '/' . self::NAMESPACE_NAME . '/session' !== $request->get_route() ) {
+			return $response;
+		}
+		foreach ( wp_get_nocache_headers() as $name => $value ) {
+			if ( '' !== (string) $value ) {
+				$response->header( $name, (string) $value );
+			}
+		}
+
+		return $response;
 	}
 
 	/**
@@ -171,7 +198,11 @@ final class SessionController {
 	}
 
 	/**
-	 * Sanitises variation attributes: scalar keys and values only.
+	 * Sanitises variation attributes: scalar values only. Keys are lower-cased
+	 * and keep only the characters of an attribute slug (`a-z`, `0-9`, `_`,
+	 * `-` and `%`, since the slug of a name with non-ASCII characters is
+	 * URL-encoded); whether a key is an attribute of the product is decided
+	 * later, against the product.
 	 *
 	 * @param mixed $value Raw value.
 	 */
@@ -182,7 +213,8 @@ final class SessionController {
 		}
 		foreach ( $value as $attribute => $selected ) {
 			if ( is_scalar( $selected ) ) {
-				$clean[ sanitize_text_field( (string) $attribute ) ] = sanitize_text_field( (string) $selected );
+				$key           = (string) preg_replace( '/[^a-z0-9_%\-]/', '', strtolower( (string) $attribute ) );
+				$clean[ $key ] = sanitize_text_field( (string) $selected );
 			}
 		}
 
@@ -190,14 +222,65 @@ final class SessionController {
 	}
 
 	/**
-	 * Applies the global and the per-IP rate limit. The global bucket protects
-	 * the paid wallee call against forged forwarding headers.
+	 * Applies the per-client and the global rate limit. The client's own
+	 * bucket comes first: a request it refuses does not count against the
+	 * global bucket, so one client cannot use up everyone's allowance.
 	 *
 	 * @param string $ip Client IP address.
 	 */
 	public function rateAllows( string $ip ): bool {
-		return $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW )
-			&& $this->limiter->allow( 'session|' . $ip, self::RATE_MAX, self::RATE_WINDOW );
+		return $this->limiter->allow( 'session|' . self::rateKey( $ip ), self::RATE_MAX, self::RATE_WINDOW )
+			&& $this->limiter->allow( 'session|global', self::GLOBAL_MAX, self::RATE_WINDOW );
+	}
+
+	/**
+	 * The rate limit bucket of a client address. An IPv4 address is its own
+	 * bucket. An IPv6 address counts as its /64 network, the block one
+	 * subscriber usually gets, so a host cannot rotate addresses within it to
+	 * get more requests. An IPv4-mapped IPv6 address counts as its IPv4
+	 * address. Anything else is used as it is.
+	 *
+	 * @param string $ip Client IP address, or 'unknown'.
+	 */
+	public static function rateKey( string $ip ): string {
+		if ( false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+			return $ip;
+		}
+		$packed = inet_pton( $ip );
+		if ( false === $packed || 16 !== strlen( $packed ) ) {
+			return $ip;
+		}
+		if ( str_repeat( "\0", 10 ) . "\xff\xff" === substr( $packed, 0, 12 ) ) {
+			return (string) inet_ntop( substr( $packed, 12 ) );
+		}
+
+		return inet_ntop( substr( $packed, 0, 8 ) . str_repeat( "\0", 8 ) ) . '/64';
+	}
+
+	/**
+	 * The client address for rate limiting: `REMOTE_ADDR`, which a client
+	 * cannot choose. Shops behind a trusted proxy or CDN can return the
+	 * forwarded address through the filter `wallee_ec_client_ip`; a value
+	 * that is not an IP address is ignored.
+	 */
+	public static function clientIp(): string {
+		$remote = isset( $_SERVER['REMOTE_ADDR'] ) ? filter_var( wp_unslash( $_SERVER['REMOTE_ADDR'] ), FILTER_VALIDATE_IP ) : false; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Validated as an IP address.
+		$remote = false === $remote ? '' : (string) $remote;
+
+		$filtered = apply_filters( 'wallee_ec_client_ip', $remote );
+		if ( is_string( $filtered ) && false !== filter_var( $filtered, FILTER_VALIDATE_IP ) ) {
+			return $filtered;
+		}
+
+		return '' === $remote ? 'unknown' : $remote;
+	}
+
+	/**
+	 * Whether the caller has a WooCommerce session (a session cookie or a
+	 * logged-in user). Callers without one get none from this endpoint.
+	 */
+	public static function hasCustomerSession(): bool {
+		return WC()->session && WC()->session->has_session();
 	}
 
 	/**
@@ -209,7 +292,7 @@ final class SessionController {
 	public function handle( $request ) {
 		$adapter = Plugin::adapter();
 
-		if ( ! $this->rateAllows( \WC_Geolocation::get_ip_address() ) ) {
+		if ( ! $this->rateAllows( self::clientIp() ) ) {
 			return new \WP_REST_Response( array( 'error' => 'rate_limited' ), 429 );
 		}
 
@@ -219,26 +302,25 @@ final class SessionController {
 		if ( ! $enabled ) {
 			return self::refusal( 'disabled' );
 		}
-		if ( ! Plugin::isActive() ) {
-			return self::refusal( 'not_configured' );
-		}
 
 		// REST requests do not load the cart, customer and session by default.
 		if ( null === WC()->cart ) {
 			wc_load_cart();
 		}
+		// Without a WooCommerce session the cart is empty: refuse before any
+		// further work (and never start a session for such a caller).
+		if ( CartSnapshot::CONTEXT_CART === $context && ! self::hasCustomerSession() ) {
+			return self::refusal( 'empty' );
+		}
+		if ( ! Plugin::isActive() ) {
+			return self::refusal( 'not_configured' );
+		}
 
-		try {
-			$snapshot = $this->snapshotFor( $context, $request );
-			$hash     = $snapshot->hash();
-		} catch ( \InvalidArgumentException $e ) {
-			if ( SnapshotFactory::TOTAL_MISMATCH === $e->getMessage() ) {
-				$adapter->log( 'Session refused: the cart snapshot does not reproduce the cart total (total_mismatch).', 'warning' );
-			}
-			return self::refusal( 'unavailable' );
-		} catch ( \RuntimeException $e ) {
+		$built = $this->snapshotAndHash( $context, $request );
+		if ( null === $built ) {
 			return self::refusal( 'unavailable' );
 		}
+		list( $snapshot, $hash ) = $built;
 
 		$reason = Eligibility::fromEnvironment( true )->reason( $snapshot );
 		if ( null !== $reason ) {
@@ -281,17 +363,22 @@ final class SessionController {
 
 	/**
 	 * Response body for a token: the token and when its wallee session
-	 * expires, so the page can renew it in time.
+	 * expires, so the page can renew it in time. `expiresIn` is the remaining
+	 * lifetime in seconds by the server's clock; the page counts it down
+	 * from the moment it sent the request and never compares it with the
+	 * browser's clock. `expiresAt` stays for information.
 	 *
-	 * @param string $token      Session token.
-	 * @param string $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
-	 * @return array{sessionToken: string, expiresAt?: string}
+	 * @param string   $token      Session token.
+	 * @param string   $created_at Creation time of the session row, UTC `Y-m-d H:i:s`.
+	 * @param int|null $now        Current Unix time, null for the server's clock.
+	 * @return array{sessionToken: string, expiresAt?: string, expiresIn?: int}
 	 */
-	public static function tokenResponse( string $token, string $created_at ): array {
+	public static function tokenResponse( string $token, string $created_at, ?int $now = null ): array {
 		$body    = array( 'sessionToken' => $token );
 		$expires = self::expiresAt( $created_at );
 		if ( null !== $expires ) {
 			$body['expiresAt'] = $expires;
+			$body['expiresIn'] = max( 0, (int) strtotime( $expires ) - ( null === $now ? time() : $now ) );
 		}
 
 		return $body;
@@ -311,6 +398,34 @@ final class SessionController {
 		}
 
 		return gmdate( 'Y-m-d\TH:i:s\Z', $created->getTimestamp() + self::LIFETIME_SECONDS );
+	}
+
+	/**
+	 * The snapshot for the requested context and its hash, or null when none
+	 * can be built. Any error counts as a refusal, also one thrown by
+	 * third-party code hooked into WooCommerce's validation; only its class
+	 * is logged.
+	 *
+	 * @param string           $context Context.
+	 * @param \WP_REST_Request $request Request.
+	 * @return array{0: CartSnapshot, 1: string}|null
+	 */
+	public function snapshotAndHash( string $context, $request ): ?array {
+		try {
+			$snapshot = $this->snapshotFor( $context, $request );
+
+			return array( $snapshot, $snapshot->hash() );
+		} catch ( \InvalidArgumentException $e ) {
+			if ( SnapshotFactory::TOTAL_MISMATCH === $e->getMessage() ) {
+				Plugin::adapter()->log( 'Session refused: the cart snapshot does not reproduce the cart total (total_mismatch).', 'warning' );
+			}
+		} catch ( \RuntimeException $e ) {
+			return null;
+		} catch ( \Throwable $e ) {
+			Plugin::adapter()->log( sprintf( 'Session refused: snapshot not built (%s).', get_class( $e ) ), 'warning' );
+		}
+
+		return null;
 	}
 
 	/**
@@ -343,7 +458,7 @@ final class SessionController {
 	 * @return array|null Response body, see tokenResponse().
 	 */
 	private function reusable( string $context, string $hash ): ?array {
-		if ( ! WC()->session ) {
+		if ( ! self::hasCustomerSession() ) {
 			return null;
 		}
 		$entry = WC()->session->get( self::SESSION_KEY );
@@ -398,18 +513,17 @@ final class SessionController {
 	}
 
 	/**
-	 * Remembers the token in the customer's WooCommerce session.
+	 * Remembers the token in the customer's WooCommerce session, if the
+	 * caller has one. No session is started for a caller without one: such
+	 * a caller gets a new token on every page load.
 	 *
 	 * @param string $context Context.
 	 * @param string $hash    Snapshot hash.
 	 * @param array  $result  Result of SessionService::create().
 	 */
-	private function remember( string $context, string $hash, array $result ): void {
-		if ( ! WC()->session ) {
+	public function remember( string $context, string $hash, array $result ): void {
+		if ( ! self::hasCustomerSession() ) {
 			return;
-		}
-		if ( ! WC()->session->has_session() ) {
-			WC()->session->set_customer_session_cookie( true );
 		}
 		WC()->session->set(
 			self::SESSION_KEY,

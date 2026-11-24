@@ -1,15 +1,17 @@
 <?php
 /**
  * Plugin Name:       wallee Express Checkout
- * Description:       Express checkout buttons for WooCommerce, powered by wallee.
- * Version:           0.1.0
+ * Plugin URI:        https://wallee.com
+ * Description:       Express checkout buttons (Apple Pay, PayPal) for WooCommerce, powered by wallee.
+ * Version:           1.0.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
- * Requires Plugins:  woocommerce
+ * Author:            wallee AG
+ * Author URI:        https://www.wallee.com
+ * Requires Plugins:  woocommerce, woo-wallee
  * WC requires at least: 8.0
- * WC tested up to:   11.0
+ * WC tested up to:   11.0.1
  * Text Domain:       wallee-express-checkout
- * Domain Path:       /languages
  * License:           Apache-2.0
  * License URI:       http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -18,7 +20,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WALLEE_EC_VERSION', '0.1.0' );
+define( 'WALLEE_EC_VERSION', '1.0.0' );
 define( 'WALLEE_EC_FILE', __FILE__ );
 define( 'WALLEE_EC_PATH', plugin_dir_path( __FILE__ ) );
 
@@ -43,13 +45,6 @@ add_action(
 			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', WALLEE_EC_FILE, true );
 			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', WALLEE_EC_FILE, true );
 		}
-	}
-);
-
-add_action(
-	'init',
-	static function () {
-		load_plugin_textdomain( 'wallee-express-checkout', false, dirname( plugin_basename( WALLEE_EC_FILE ) ) . '/languages' );
 	}
 );
 

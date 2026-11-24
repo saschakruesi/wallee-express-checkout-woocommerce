@@ -13,11 +13,12 @@ use Wallee\ExpressCheckout\Support\Money;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The comparison methods (`check`, `selectedOption`, `matchedRate`, `email`)
- * make no WooCommerce calls. Everything read from a wallee response is
- * treated as untrusted and possibly absent: a missing key is a failed check,
- * never a PHP notice. `stockAndCoupons` talks to WooCommerce and is verified
- * on the staging shop.
+ * The comparison methods (`check`, `environment`, `selectedOption`,
+ * `matchedRate`, `email`, `noticeCountry`) make no WooCommerce calls;
+ * `destination` asks WooCommerce for tax rates (TaxDestination). Everything
+ * read from a wallee response is treated as untrusted and possibly absent: a
+ * missing key is a failed check, never a PHP notice. `stockAndCoupons` and `customerCoupons` talk to WooCommerce; they
+ * are unit tested with stand-ins and verified on the staging shop.
  */
 final class OrderValidator {
 
@@ -28,6 +29,26 @@ final class OrderValidator {
 	const AMOUNT_MISMATCH   = 'amount_mismatch';
 	const OUT_OF_STOCK      = 'out_of_stock';
 	const COUPON_INVALID    = 'coupon_invalid';
+
+	/**
+	 * The session was approved in another authorization environment than the
+	 * one configured (TEST or PRODUCTION).
+	 */
+	const ENVIRONMENT_MISMATCH = 'environment_mismatch';
+
+	/**
+	 * The wallet's address is in another country than the shipping quote or,
+	 * where taxes follow the customer's address, the address taxes are based
+	 * on has other tax rates than the snapshot's tax location.
+	 */
+	const DESTINATION_CHANGED = 'destination_changed';
+
+	/**
+	 * Not a refusal: the region of the address taxes are based on matches no
+	 * WooCommerce state while the country's rates depend on the state; the
+	 * order is kept with TaxDestination::regionNote().
+	 */
+	const TAX_REGION_UNMATCHED = 'tax_region_unmatched';
 
 	/**
 	 * The one shipping option the customer selected.
@@ -117,6 +138,95 @@ final class OrderValidator {
 	}
 
 	/**
+	 * The session must have been approved in the configured authorization
+	 * environment; a missing value does not match.
+	 *
+	 * @param array  $session  Session as returned by the wallee API.
+	 * @param string $expected Configured environment, TEST or PRODUCTION.
+	 * @return string|null Null if it matches, else `environment_mismatch`.
+	 */
+	public static function environment( array $session, string $expected ): ?string {
+		if ( isset( $session['authorizationEnvironment'] ) && $session['authorizationEnvironment'] === $expected ) {
+			return null;
+		}
+
+		return self::ENVIRONMENT_MISMATCH;
+	}
+
+	/**
+	 * Whether WooCommerce taxes by the customer's address: taxes are enabled
+	 * and the tax basis is not the shop base address.
+	 */
+	public static function taxFollowsAddress(): bool {
+		return TaxDestination::BASIS_NONE !== TaxDestination::basis();
+	}
+
+	/**
+	 * Country of an order's delivery address: shipping, else billing.
+	 *
+	 * @param \WC_Order $order Order.
+	 */
+	public static function deliveryCountry( \WC_Order $order ): string {
+		$country = (string) $order->get_shipping_country();
+
+		return '' === $country ? (string) $order->get_billing_country() : $country;
+	}
+
+	/**
+	 * Compares the country of the wallet's address with the stored shipping
+	 * quote and, where taxes follow the customer's address, the address taxes
+	 * are based on with the snapshot's tax location (TaxDestination: same
+	 * WooCommerce tax rates for every class involved).
+	 *
+	 * @param CartSnapshot $snapshot    Snapshot.
+	 * @param array|null   $quote       Stored shipping quote, null without one.
+	 * @param string       $country     Country of the shipping address (billing as fallback), empty if unknown.
+	 * @param array|null   $tax_address Address taxes are based on (TaxDestination::orderAddress()), null when
+	 *                                  taxes do not follow the customer's address.
+	 * @return string|null Null if consistent or the country is unknown, `tax_region_unmatched` if consistent
+	 *                     apart from a region that matches no state (not a refusal), else `destination_changed`.
+	 */
+	public static function destination( CartSnapshot $snapshot, ?array $quote, string $country, ?array $tax_address ): ?string {
+		if ( '' === $country ) {
+			return null;
+		}
+		$quoted = null === $quote ? null : self::nested( $quote, 'destination', 'country' );
+		if ( is_string( $quoted ) && 0 !== strcasecmp( $quoted, $country ) ) {
+			return self::DESTINATION_CHANGED;
+		}
+		if ( null !== $tax_address && isset( $tax_address['country'] ) && is_string( $tax_address['country'] ) && '' !== $tax_address['country'] ) {
+			$rates = TaxDestination::compare( $snapshot, $tax_address );
+			if ( TaxDestination::DIFFERENT === $rates ) {
+				return self::DESTINATION_CHANGED;
+			}
+			if ( TaxDestination::REGION_UNMATCHED === $rates ) {
+				return self::TAX_REGION_UNMATCHED;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * The country a destination refusal may name to the customer: the
+	 * delivery country when it is not the one the order was calculated for
+	 * (the quote's country, else the tax location's). Otherwise the refusal
+	 * is about something else (state, postcode, city or the billing address)
+	 * and no country is named.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param array|null   $quote    Stored shipping quote, null without one.
+	 * @param string       $country  Delivery country, empty if unknown.
+	 * @return string The country code, '' for none.
+	 */
+	public static function noticeCountry( CartSnapshot $snapshot, ?array $quote, string $country ): string {
+		$quoted     = null === $quote ? null : self::nested( $quote, 'destination', 'country' );
+		$calculated = is_string( $quoted ) ? $quoted : $snapshot->taxLocation()['country'];
+
+		return '' === $country || 0 === strcasecmp( $country, $calculated ) ? '' : $country;
+	}
+
+	/**
 	 * The customer's e-mail: billing address, shipping address, the
 	 * transaction's customer e-mail, the logged-in customer. Each must be a
 	 * valid address, an invalid one is skipped.
@@ -148,15 +258,15 @@ final class OrderValidator {
 	 * Re-validates stock and coupons right before the order is made.
 	 *
 	 * Coupons are validated against an unsaved order that holds the snapshot's
-	 * lines, the customer and the e-mail, so usage limits, minimum and maximum
-	 * amounts and product restrictions are WooCommerce's own. A coupon with an
-	 * e-mail restriction is invalid while no e-mail is known.
+	 * lines and the customer, so usage limits, minimum and maximum amounts and
+	 * product restrictions are WooCommerce's own. The e-mail is not known yet:
+	 * e-mail restrictions and the guest usage limit per e-mail are checked by
+	 * customerCoupons() once it is.
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param string       $email    E-mail of the customer, empty if unknown.
 	 * @return string|null Null, `out_of_stock` or `coupon_invalid`.
 	 */
-	public static function stockAndCoupons( CartSnapshot $snapshot, string $email ): ?string {
+	public static function stockAndCoupons( CartSnapshot $snapshot ): ?string {
 		$products = array();
 		$managed  = array();
 
@@ -190,10 +300,55 @@ final class OrderValidator {
 			}
 		}
 
+		return self::coupons_valid( $snapshot, $products, '' ) ? null : self::COUPON_INVALID;
+	}
+
+	/**
+	 * Re-validates the coupons with the customer's e-mail, after the wallet
+	 * provided it and before the customer is sent to the payment step:
+	 * WooCommerce's coupon validation (global usage limit, usage limit per
+	 * user for customers with an account, e-mail restrictions, amounts and
+	 * product rules) and, for guests, the usage limit per e-mail address the
+	 * way WooCommerce's checkout counts it.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param string       $email    Billing e-mail of the order.
+	 * @return string|null Null or `coupon_invalid`.
+	 */
+	public static function customerCoupons( CartSnapshot $snapshot, string $email ): ?string {
 		if ( array() === $snapshot->coupons() ) {
 			return null;
 		}
 
+		$products = array();
+		foreach ( $snapshot->items() as $item ) {
+			$product = wc_get_product( $item['variation_id'] > 0 ? $item['variation_id'] : $item['product_id'] );
+			if ( ! $product instanceof \WC_Product ) {
+				return self::COUPON_INVALID;
+			}
+			$products[] = array( $product, $item );
+		}
+
+		return self::coupons_valid( $snapshot, $products, $email ) ? null : self::COUPON_INVALID;
+	}
+
+	/**
+	 * Validates every coupon of the snapshot with WooCommerce's rules.
+	 *
+	 * Without an e-mail (`''`), e-mail restrictions are left out (validated
+	 * on a copy of the coupon without them) and the guest limit per e-mail is
+	 * not counted; with one, both apply.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param array        $products Pairs of product and snapshot item.
+	 * @param string       $email    Customer e-mail, '' if not known yet.
+	 */
+	private static function coupons_valid( CartSnapshot $snapshot, array $products, string $email ): bool {
+		if ( array() === $snapshot->coupons() ) {
+			return true;
+		}
+
+		$email = strtolower( sanitize_email( $email ) );
 		$order = new \WC_Order();
 		$order->set_currency( $snapshot->currency() );
 		$order->set_customer_id( $snapshot->customerId() );
@@ -213,18 +368,50 @@ final class OrderValidator {
 		foreach ( $snapshot->coupons() as $code ) {
 			$coupon = new \WC_Coupon( $code );
 			if ( ! $coupon->get_id() ) {
-				return self::COUPON_INVALID;
+				return false;
 			}
-			$restrictions = $coupon->get_email_restrictions();
-			if ( is_array( $restrictions ) && array() !== $restrictions && '' === $email ) {
-				return self::COUPON_INVALID;
+
+			$checked = $coupon;
+			if ( '' === $email ) {
+				$restrictions = $coupon->get_email_restrictions();
+				if ( is_array( $restrictions ) && array() !== $restrictions ) {
+					$checked = clone $coupon;
+					$checked->set_email_restrictions( array() );
+				}
 			}
-			if ( true !== $discounts->is_coupon_valid( $coupon ) ) {
-				return self::COUPON_INVALID;
+			if ( true !== $discounts->is_coupon_valid( $checked ) ) {
+				return false;
+			}
+
+			if ( '' !== $email && 0 === $snapshot->customerId() && self::guest_limit_reached( $coupon, $email ) ) {
+				return false;
 			}
 		}
 
-		return null;
+		return true;
+	}
+
+	/**
+	 * Whether a guest has used up a coupon's usage limit per user, counted by
+	 * billing e-mail as WooCommerce's checkout does for guests.
+	 *
+	 * @param \WC_Coupon $coupon Coupon.
+	 * @param string     $email  Lower-case e-mail.
+	 */
+	private static function guest_limit_reached( \WC_Coupon $coupon, string $email ): bool {
+		$limit = (int) $coupon->get_usage_limit_per_user();
+		if ( $limit <= 0 ) {
+			return false;
+		}
+
+		$store = $coupon->get_data_store();
+		if ( is_object( $store ) && is_callable( array( $store, 'get_usage_by_email' ) ) ) {
+			$used = (int) $store->get_usage_by_email( $coupon, $email );
+		} else {
+			$used = count( array_keys( array_map( 'strtolower', array_map( 'strval', (array) $coupon->get_used_by() ) ), $email, true ) );
+		}
+
+		return $used >= $limit;
 	}
 
 	/**

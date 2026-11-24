@@ -258,6 +258,89 @@ class SessionRepository {
 	}
 
 	/**
+	 * The rows of an order with the fields that relate to a person, for the
+	 * personal data export: IDs, state, creation time, the tax location the
+	 * prices were calculated for and the delivery destination from the wallet.
+	 *
+	 * @param int $order_id Order ID.
+	 * @return array<int, array{id: int, state: string, wallee_session_id: int, transaction_id: int|null, created_at: string, tax_location: array, destination: array}>
+	 */
+	public function rowsForOrder( int $order_id ): array {
+		if ( $order_id <= 0 ) {
+			return array();
+		}
+		$table = $this->table();
+		$rows  = $this->db->get_results(
+			$this->db->prepare(
+				"SELECT id, state, wallee_session_id, transaction_id, created_at, snapshot, shipping_quote FROM {$table} WHERE order_id = %d ORDER BY id", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is the prefix plus a constant.
+				$order_id
+			),
+			ARRAY_A
+		);
+
+		$result = array();
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			$snapshot = json_decode( (string) $row['snapshot'], true );
+			$quote    = self::decode_quote( $row );
+			$result[] = array(
+				'id'                => (int) $row['id'],
+				'state'             => (string) $row['state'],
+				'wallee_session_id' => (int) $row['wallee_session_id'],
+				'transaction_id'    => null === $row['transaction_id'] ? null : (int) $row['transaction_id'],
+				'created_at'        => (string) $row['created_at'],
+				'tax_location'      => self::address( is_array( $snapshot ) && isset( $snapshot['tax_location'] ) ? $snapshot['tax_location'] : null ),
+				'destination'       => self::address( null !== $quote && isset( $quote['destination'] ) ? $quote['destination'] : null ),
+			);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Deletes the rows of an order that are in one of the given states.
+	 *
+	 * @param int      $order_id Order ID.
+	 * @param string[] $states   States.
+	 * @return int Number of deleted rows.
+	 * @throws \InvalidArgumentException On an unknown state.
+	 */
+	public function deleteForOrder( int $order_id, array $states ): int {
+		foreach ( $states as $state ) {
+			self::assert_state( (string) $state );
+		}
+		if ( $order_id <= 0 || array() === $states ) {
+			return 0;
+		}
+		$table        = $this->table();
+		$placeholders = implode( ',', array_fill( 0, count( $states ), '%s' ) );
+
+		return (int) $this->db->query(
+			$this->db->prepare(
+				"DELETE FROM {$table} WHERE order_id = %d AND state IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Table name is the prefix plus a constant; one placeholder per state.
+				array_merge( array( $order_id ), array_values( $states ) )
+			)
+		);
+	}
+
+	/**
+	 * Country, state, postcode and city of a stored address, empty if none.
+	 *
+	 * @param mixed $address Stored address.
+	 * @return array<string, string>
+	 */
+	private static function address( $address ): array {
+		if ( ! is_array( $address ) ) {
+			return array();
+		}
+		$result = array();
+		foreach ( array( 'country', 'state', 'postcode', 'city' ) as $key ) {
+			$result[ $key ] = isset( $address[ $key ] ) && is_scalar( $address[ $key ] ) ? (string) $address[ $key ] : '';
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Table name.
 	 */
 	private function table(): string {

@@ -5,6 +5,8 @@
  * @package Wallee\ExpressCheckout
  */
 
+defined( 'ABSPATH' ) || exit;
+
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 	exit;
 }
@@ -13,6 +15,8 @@ global $wpdb;
 
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders -- Schema removal on uninstall; table name is the prefix plus a constant.
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'wallee_ec_session' );
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders -- Schema removal on uninstall; table name is the prefix plus a constant.
+$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'wallee_ec_rate' );
 
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Removes every option of this plugin on uninstall.
 $wpdb->query(
