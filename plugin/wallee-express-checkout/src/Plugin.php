@@ -107,6 +107,7 @@ final class Plugin {
 		Session\Installer::register();
 		Http\SessionController::register();
 		Http\ShippingController::register();
+		Http\DomainAssociation::register();
 		Frontend\CartButtons::register();
 		Frontend\ProductButtons::register();
 		if ( is_admin() ) {
