@@ -383,14 +383,29 @@ first webhook can matter:
 
 Points 2 and 3 need the transaction, which is known through the session's
 `linkedTransaction`. Whether that is already set at `APPROVED` or only after
-process is to be established by the spike. The rule for the builder: do the
-linking at the earliest point the transaction ID is available, and again in
-`ResultHandler` as a safety net (the upsert is idempotent). If the transaction
-is not available before process, set `payment_method` before process to the
-gateway resolved from the wallet type, and correct it once the transaction is
-readable. If no matching gateway can be resolved, do not process: fail the
-order with a clear admin-facing note, because such an order could not be
-refunded.
+process is to be established by the spike. Rules for the builder (author's
+call):
+
+- The gateway is always resolved from the transaction itself, never guessed
+  from the wallet type: transaction, its payment connector configuration, that
+  one's payment method configuration ID,
+  `WC_Wallee_Entity_Method_Configuration::load_by_configuration()`, local ID,
+  `wallee_<local id>`. If the configuration is not in the local table, trigger
+  the main plugin's method configuration synchronisation once and retry.
+- Do the linking (gateway and transaction info row) at the earliest point the
+  transaction ID is available: before process if the spike shows it exists at
+  `APPROVED`, otherwise immediately after the process call returns and before
+  the browser is redirected. Repeat it in `ResultHandler` as a safety net; the
+  upsert is idempotent.
+- Until the real gateway is known the order carries the provisional
+  `payment_method` value `wallee_express_checkout`. It contains `wallee`, so a
+  Transaction webhook arriving in the gap is still accepted through the
+  merchantReference fallback.
+- If the gateway still cannot be resolved after the payment went through, the
+  order is not failed (the customer has paid). It keeps the provisional value,
+  gets an admin-facing order note explaining that refund and completion must
+  be done in the wallee portal, and an error is logged. `ResultHandler` and a
+  later admin page load of the order retry the resolution.
 
 ### 5.6 Settings
 
@@ -420,8 +435,36 @@ geolocated). Only shipping depends on the wallet address. This is a limit of
 the API and is stated in the plugin's readme.
 
 Buttons are not shown when the cart contains subscription products, when the
-cart needs more than one shipping package, or when the main plugin is not
-configured.
+cart needs more than one shipping package, when the main plugin is not
+configured, or when guest checkout is disabled and the customer is not logged
+in.
+
+Checkout rules that normally run in the checkout form (author's calls):
+
+- Terms and conditions: if the shop has a terms page, a line with a link
+  ("By paying you accept our terms and conditions") is shown under the
+  buttons. No checkbox in the prototype.
+- Stock: re-validated in `ReturnHandler` before the order is created
+  (in stock, enough quantity, sold-individually, still purchasable). A failure
+  takes the same path as an amount mismatch: no process call, back to the cart
+  with a notice.
+- Coupons: re-validated at the same point, now with the e-mail from the
+  wallet (e-mail restrictions, usage limits). An invalid coupon is a failure
+  on the same path, because the approved amount would no longer match.
+
+Tax location (author's call): item taxes and shipping taxes both use the tax
+location of the snapshot, so the order is consistent in itself and its total
+equals what was approved. The shipping cost comes from the zone of the wallet
+address; only its tax rate follows the snapshot. If the wallet address is in a
+different country than the snapshot's tax location, the order gets a private
+note saying so. Correct destination-based tax would need line item updates
+that the API does not offer.
+
+Main plugin version (author's call): staging is pinned to v3.4.11.
+`MainPluginAdapter` checks at boot that every class and method it calls
+exists. If one is missing the add-on stays inert with an admin notice. If all
+exist but the main plugin version is newer than the last tested one, the
+add-on runs and shows a dismissible admin warning.
 
 ### 5.8 Apple Pay verification file
 
@@ -472,6 +515,10 @@ documentation leaves open. Results are written to
 5. How line item taxes and discounts must be shaped for the session total to
    equal the WooCommerce total.
 6. Session lifetime, if observable.
+7. Which `uniqueId` wallee gives the shipping line item on the transaction
+   (the shipping order item needs the same value in
+   `_wallee_unique_line_item_id`), and where the payment method configuration
+   ID sits on the transaction.
 
 ## 8. Security
 
