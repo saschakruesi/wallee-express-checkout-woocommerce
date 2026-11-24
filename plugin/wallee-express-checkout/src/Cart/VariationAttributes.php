@@ -26,10 +26,25 @@ final class VariationAttributes {
 	/**
 	 * Whether a key has the form of a WooCommerce variation attribute key.
 	 *
+	 * WooCommerce stores the key as order item meta named
+	 * `str_replace( 'attribute_', '', $key )`, which removes every occurrence.
+	 * That name must be a plain slug: not empty and not starting with `_`,
+	 * the form of internal item properties. Checked with and without regard
+	 * to case.
+	 *
 	 * @param mixed $key Key.
 	 */
 	public static function isAttributeKey( $key ): bool {
-		return is_string( $key ) && 1 === preg_match( self::KEY_PATTERN, $key );
+		if ( ! is_string( $key ) || 1 !== preg_match( self::KEY_PATTERN, $key ) ) {
+			return false;
+		}
+		foreach ( array( str_replace( 'attribute_', '', $key ), str_ireplace( 'attribute_', '', $key ) ) as $meta_key ) {
+			if ( '' === $meta_key || '_' === $meta_key[0] ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

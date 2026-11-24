@@ -133,4 +133,30 @@ class VariationAttributesTest extends TestCase {
 		$this->assertFalse( VariationAttributes::isAttributeKey( 'attribute_size name' ) );
 		$this->assertFalse( VariationAttributes::isAttributeKey( 12 ) );
 	}
+
+	/**
+	 * WooCommerce stores `str_replace( 'attribute_', '', $key )` as item meta:
+	 * that name must be a plain attribute slug, never empty or internal.
+	 *
+	 * @dataProvider keys_that_become_internal_meta
+	 *
+	 * @param string $key Key.
+	 */
+	public function test_a_key_that_becomes_internal_or_empty_meta_is_refused( string $key ) {
+		$this->assertFalse( VariationAttributes::isAttributeKey( $key ) );
+	}
+
+	public function keys_that_become_internal_meta(): array {
+		return array(
+			'reduced stock'       => array( 'attribute__reduced_stock' ),
+			'tax class'           => array( 'attribute__tax_class' ),
+			'nested prefix'       => array( 'attribute_attribute__qty' ),
+			'nested to empty'     => array( 'attribute_attribute_' ),
+			'upper case internal' => array( 'Attribute__product_id' ),
+		);
+	}
+
+	public function test_a_slug_that_only_contains_attribute_elsewhere_is_accepted() {
+		$this->assertTrue( VariationAttributes::isAttributeKey( 'attribute_my_attribute_size' ) );
+	}
 }

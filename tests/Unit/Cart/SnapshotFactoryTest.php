@@ -330,6 +330,110 @@ class SnapshotFactoryTest extends TestCase {
 		);
 	}
 
+	/**
+	 * A cart with the given lines. Totals are a no-op; reaching the shipping
+	 * question means every line check passed.
+	 *
+	 * @param array $lines Cart lines as WC_Cart::get_cart() returns them.
+	 */
+	private function cart( array $lines ): \WC_Cart {
+		if ( ! class_exists( 'WC_Cart', false ) ) {
+			eval( 'class WC_Cart { public function calculate_totals() { throw new \\LogicException( "totals" ); } }' ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
+		}
+
+		return new class( $lines ) extends \WC_Cart {
+			private $lines;
+
+			public function __construct( array $lines ) {
+				$this->lines = $lines;
+			}
+
+			public function calculate_totals() {
+			}
+
+			public function get_cart() {
+				return $this->lines;
+			}
+
+			public function needs_shipping() {
+				throw new \LogicException( 'lines checked' );
+			}
+		};
+	}
+
+	/**
+	 * A cart line.
+	 *
+	 * @param int   $product_id   Product.
+	 * @param int   $variation_id Variation.
+	 * @param array $variation    Variation data.
+	 */
+	private function line( int $product_id, int $variation_id, array $variation ): array {
+		return array(
+			'product_id'   => $product_id,
+			'variation_id' => $variation_id,
+			'variation'    => $variation,
+			'quantity'     => 1,
+			'data'         => $this->products[ $variation_id > 0 ? $variation_id : $product_id ],
+		);
+	}
+
+	private function assertCartAccepted( array $lines ): void {
+		try {
+			( new SnapshotFactory() )->fromCart( $this->cart( $lines ) );
+			$this->fail( 'line checks were expected to pass' );
+		} catch ( \LogicException $e ) {
+			$this->assertSame( 'lines checked', $e->getMessage() );
+		}
+	}
+
+	public function test_a_cart_with_the_parents_variation_attributes_is_accepted() {
+		$this->assertCartAccepted(
+			array(
+				'a' => $this->line( self::SIMPLE, 0, array() ),
+				'b' => $this->line(
+					self::VARIABLE,
+					self::VARIATION,
+					array(
+						'attribute_size'     => 'M',
+						'attribute_pa_color' => 'red',
+					)
+				),
+			)
+		);
+	}
+
+	/**
+	 * @dataProvider cart_variation_data_not_of_the_parent
+	 *
+	 * @param int   $product_id   Product.
+	 * @param int   $variation_id Variation.
+	 * @param array $variation    Variation data of the line.
+	 */
+	public function test_a_cart_line_with_variation_data_that_is_no_variation_attribute_is_refused( int $product_id, int $variation_id, array $variation ) {
+		$this->expectException( \InvalidArgumentException::class );
+
+		( new SnapshotFactory() )->fromCart( $this->cart( array( 'x' => $this->line( $product_id, $variation_id, $variation ) ) ) );
+	}
+
+	public function cart_variation_data_not_of_the_parent(): array {
+		return array(
+			'attribute not used for variations' => array( self::VARIABLE, self::VARIATION, array( 'attribute_material' => 'Cotton' ) ),
+			'unknown attribute'                 => array( self::VARIABLE, self::VARIATION, array( 'attribute_weight' => '1' ) ),
+			'internal meta name'                => array( self::VARIABLE, self::VARIATION, array( 'attribute__reduced_stock' => '1' ) ),
+			'nested prefix'                     => array( self::VARIABLE, self::VARIATION, array( 'attribute_attribute__tax_class' => 'zero-rate' ) ),
+			'simple product with data'          => array( self::SIMPLE, 0, array( 'attribute_size' => 'M' ) ),
+		);
+	}
+
+	public function test_a_cart_line_whose_parent_is_gone_is_refused() {
+		$line = $this->line( self::VARIABLE, self::VARIATION, array( 'attribute_size' => 'M' ) );
+		unset( $this->products[ self::VARIABLE ] );
+
+		$this->expectException( \InvalidArgumentException::class );
+		( new SnapshotFactory() )->fromCart( $this->cart( array( 'x' => $line ) ) );
+	}
+
 	public function test_cart_validation_runs_woocommerces_cart_checks_and_refuses_on_errors() {
 		if ( ! class_exists( 'WC_Cart', false ) ) {
 			eval( 'class WC_Cart { public function calculate_totals() { throw new \\LogicException( "totals" ); } }' ); // phpcs:ignore Squiz.PHP.Eval.Discouraged

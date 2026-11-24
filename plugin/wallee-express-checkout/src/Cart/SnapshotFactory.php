@@ -51,6 +51,14 @@ final class SnapshotFactory {
 
 		$cart->calculate_totals();
 
+		foreach ( $cart->get_cart() as $values ) {
+			self::checkCartVariation(
+				isset( $values['product_id'] ) ? (int) $values['product_id'] : 0,
+				isset( $values['variation_id'] ) ? (int) $values['variation_id'] : 0,
+				isset( $values['variation'] ) && is_array( $values['variation'] ) ? $values['variation'] : array()
+			);
+		}
+
 		$package_count = $cart->needs_shipping() ? count( $cart->get_shipping_packages() ) : 0;
 
 		$snapshot = $this->build( $cart, CartSnapshot::CONTEXT_CART, $package_count );
@@ -231,6 +239,30 @@ final class SnapshotFactory {
 			'options'  => $options,
 			'taxonomy' => $taxonomy,
 		);
+	}
+
+	/**
+	 * Checks the variation data of a cart line the way the product context
+	 * does for its keys: a line without a variation carries none, a
+	 * variation's keys are variation attributes of its parent. Values were
+	 * checked by WooCommerce when the line was added to the cart.
+	 *
+	 * @param int   $product_id   Product ID of the line (the parent for variations).
+	 * @param int   $variation_id Variation ID, 0 for none.
+	 * @param array $variation    Variation data of the line.
+	 * @throws \InvalidArgumentException If a key is not a variation attribute of the parent.
+	 */
+	private static function checkCartVariation( int $product_id, int $variation_id, array $variation ): void {
+		if ( array() === $variation ) {
+			return;
+		}
+		$parent  = $variation_id > 0 ? wc_get_product( $product_id ) : null;
+		$allowed = $parent instanceof \WC_Product ? self::variation_attributes_of( $parent )['options'] : array();
+		foreach ( array_keys( $variation ) as $key ) {
+			if ( ! VariationAttributes::isAttributeKey( $key ) || ! array_key_exists( $key, $allowed ) ) {
+				throw new \InvalidArgumentException( 'Cart line has variation data that is no variation attribute of the product.' );
+			}
+		}
 	}
 
 	/**

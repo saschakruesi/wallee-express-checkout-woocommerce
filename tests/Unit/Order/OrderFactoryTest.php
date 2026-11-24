@@ -72,26 +72,61 @@ class OrderFactoryTest extends TestCase {
 		);
 	}
 
-	public function test_a_line_whose_product_changes_through_its_variation_data_creates_no_order() {
-		$this->product_lookup();
+	/**
+	 * @dataProvider internal_meta_keys
+	 *
+	 * @param string $key Key of attribute form whose meta name is an internal property.
+	 */
+	public function test_variation_data_that_would_become_internal_meta_is_refused_before_any_order( string $key ) {
+		Functions\expect( 'wc_create_order' )->never();
+
+		$this->expectException( \InvalidArgumentException::class );
+		$this->variation_snapshot( array( $key => '12' ) );
+	}
+
+	public function internal_meta_keys(): array {
+		return array(
+			'product id'    => array( 'attribute__product_id' ),
+			'variation id'  => array( 'attribute__variation_id' ),
+			'nested prefix' => array( 'attribute_attribute__qty' ),
+		);
+	}
+
+	public function test_a_line_whose_product_differs_from_the_snapshot_creates_no_order() {
+		Functions\when( 'wc_get_product' )->justReturn(
+			new \WC_Product(
+				array(
+					'id'        => 21,
+					'parent_id' => 99,
+					'type'      => 'variation',
+				)
+			)
+		);
 		Functions\expect( 'wc_create_order' )->never();
 
 		try {
-			// A key of attribute form whose suffix is an internal property.
-			OrderFactory::create( $this->variation_snapshot( array( 'attribute__product_id' => '12' ) ), null, 'u', 'w', 1 );
+			OrderFactory::create( $this->variation_snapshot( array( 'attribute_size' => 'M' ) ), null, 'u', 'w', 1 );
 			$this->fail( 'refusal expected' );
 		} catch ( \RuntimeException $e ) {
 			$this->assertSame( OrderFactory::LINE_IDENTITY_CHANGED, $e->getMessage() );
 		}
 	}
 
-	public function test_a_line_whose_variation_changes_through_its_variation_data_creates_no_order() {
-		$this->product_lookup();
+	public function test_a_line_whose_variation_differs_from_the_snapshot_creates_no_order() {
+		Functions\when( 'wc_get_product' )->justReturn(
+			new \WC_Product(
+				array(
+					'id'        => 22,
+					'parent_id' => 20,
+					'type'      => 'variation',
+				)
+			)
+		);
 		Functions\expect( 'wc_create_order' )->never();
 
 		$this->expectException( \RuntimeException::class );
 		$this->expectExceptionMessage( OrderFactory::LINE_IDENTITY_CHANGED );
-		OrderFactory::create( $this->variation_snapshot( array( 'attribute__variation_id' => '99' ) ), null, 'u', 'w', 1 );
+		OrderFactory::create( $this->variation_snapshot( array( 'attribute_size' => 'M' ) ), null, 'u', 'w', 1 );
 	}
 
 	public function test_a_line_with_attribute_data_keeps_its_identity_and_the_order_is_created() {
