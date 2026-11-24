@@ -123,7 +123,8 @@ final class CustomerDetails {
 		call_user_func( $this->log, sprintf( 'Session row %d: order %d has transaction %d.', $record->id(), $order->get_id(), $transaction_id ) );
 
 		$transaction = $this->api->getTransaction( $transaction_id );
-		$email       = $this->orders->applyCustomer( $order, $transaction, $record->snapshot()->customerId() );
+		$snapshot    = $record->snapshot();
+		$email       = $this->orders->applyCustomer( $order, $transaction, $snapshot->customerId(), $snapshot->needsShipping() );
 		$state       = isset( $transaction['state'] ) && is_string( $transaction['state'] ) ? (string) preg_replace( '/[^A-Z_]/', '', $transaction['state'] ) : '';
 		call_user_func(
 			$this->log,

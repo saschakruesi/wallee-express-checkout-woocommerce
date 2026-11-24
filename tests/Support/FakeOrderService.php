@@ -74,6 +74,13 @@ class FakeOrderService extends OrderService {
 	public $applied = array();
 
 	/**
+	 * The needs-shipping argument of each applyCustomer() call.
+	 *
+	 * @var bool[]
+	 */
+	public $applied_needs_shipping = array();
+
+	/**
 	 * Result of customerCoupons().
 	 *
 	 * @var string|null
@@ -177,14 +184,16 @@ class FakeOrderService extends OrderService {
 	 *
 	 * @param \WC_Order $order       Order.
 	 * @param array     $transaction Transaction.
-	 * @param int       $customer_id Customer.
+	 * @param int       $customer_id    Customer.
+	 * @param bool      $needs_shipping Whether the order needs shipping (no shipping fallback without).
 	 */
-	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
-		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id );
-		$order->billing_email = $this->applied_email;
-		$shipping             = self::fields( $transaction, 'shippingAddress' );
-		$billing              = self::fields( $transaction, 'billingAddress' );
-		if ( '' === $shipping['country'] ) {
+	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id, bool $needs_shipping = true ): bool {
+		$this->applied[]                = array( $order->get_id(), $transaction, $customer_id );
+		$this->applied_needs_shipping[] = $needs_shipping;
+		$order->billing_email           = $this->applied_email;
+		$shipping                       = self::fields( $transaction, 'shippingAddress' );
+		$billing                        = self::fields( $transaction, 'billingAddress' );
+		if ( '' === $shipping['country'] && $needs_shipping ) {
 			$shipping = $billing;
 		}
 		if ( '' === $billing['country'] ) {

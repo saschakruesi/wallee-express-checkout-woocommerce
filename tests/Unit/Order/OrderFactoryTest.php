@@ -211,6 +211,61 @@ class OrderFactoryTest extends TestCase {
 		);
 	}
 
+	/**
+	 * Order that records the addresses set, by type.
+	 */
+	private static function recording_order(): \WC_Order {
+		Functions\when( 'sanitize_text_field' )->alias( 'trim' );
+		Functions\when( 'is_email' )->justReturn( false );
+
+		return new class( 501, 10.0 ) extends \WC_Order {
+			/**
+			 * Addresses set, by type.
+			 *
+			 * @var array
+			 */
+			public $addresses = array();
+
+			/**
+			 * Records an address.
+			 *
+			 * @param array  $address Address.
+			 * @param string $type    `billing` or `shipping`.
+			 */
+			public function set_address( $address, $type ) {
+				$this->addresses[ $type ] = $address;
+			}
+		};
+	}
+
+	public function test_an_order_without_shipping_keeps_empty_shipping_fields_when_only_billing_is_sent() {
+		$order = self::recording_order();
+
+		OrderFactory::applyCustomer( $order, array( 'billingAddress' => array( 'country' => 'CH', 'city' => 'Bern' ) ), 0, false );
+
+		$this->assertSame( 'CH', $order->addresses['billing']['country'] );
+		$this->assertSame( 'Bern', $order->addresses['billing']['city'] );
+		$this->assertSame( '', $order->addresses['shipping']['country'] );
+		$this->assertSame( '', $order->addresses['shipping']['city'] );
+	}
+
+	public function test_an_order_without_shipping_keeps_a_shipping_address_the_wallet_sent() {
+		$order = self::recording_order();
+
+		OrderFactory::applyCustomer( $order, array( 'shippingAddress' => array( 'country' => 'DE' ) ), 0, false );
+
+		$this->assertSame( 'DE', $order->addresses['shipping']['country'] );
+		$this->assertSame( 'DE', $order->addresses['billing']['country'], 'billing still falls back to the shipping address' );
+	}
+
+	public function test_an_order_with_shipping_copies_billing_to_a_missing_shipping_address() {
+		$order = self::recording_order();
+
+		OrderFactory::applyCustomer( $order, array( 'billingAddress' => array( 'country' => 'CH' ) ), 0 );
+
+		$this->assertSame( 'CH', $order->addresses['shipping']['country'] );
+	}
+
 	public function test_express_order_that_never_reached_process_is_cancelled() {
 		$this->assertTrue( OrderFactory::cancelUnpaid( false, new \WC_Order( 501, 1.0 ) ) );
 	}

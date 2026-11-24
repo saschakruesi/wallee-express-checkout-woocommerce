@@ -1232,6 +1232,18 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( '', $this->orders->orders[501]->get_meta( CustomerDetails::META_TAX_KEPT ) );
 	}
 
+	public function test_a_cart_without_shipping_goes_to_payment_with_only_a_billing_address() {
+		$this->virtual_purchase( 'CH' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertNull( $this->orders->created[0][1], 'no shipping rate, so no shipping line' );
+		$this->assertFalse( $this->orders->applied_needs_shipping[0], 'the order is told it needs no shipping' );
+		$order = $this->orders->orders[501];
+		$this->assertSame( '', $order->get_shipping_country(), 'shipping fields stay empty' );
+		$this->assertSame( 'CH', $order->get_billing_country() );
+	}
+
 	public function test_an_address_outside_the_tax_country_is_accepted_when_taxes_do_not_follow_the_address() {
 		$this->virtual_purchase( 'DE' );
 
