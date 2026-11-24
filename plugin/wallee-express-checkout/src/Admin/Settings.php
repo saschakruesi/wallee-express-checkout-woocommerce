@@ -7,6 +7,7 @@
 
 namespace Wallee\ExpressCheckout\Admin;
 
+use Wallee\ExpressCheckout\Compat\SdkShim;
 use Wallee\ExpressCheckout\Plugin;
 
 defined( 'ABSPATH' ) || exit;
@@ -249,6 +250,18 @@ class Settings {
 					/* translators: %s: wallee space ID. */
 					__( 'Space ID in use: %s', 'wallee-express-checkout' ),
 					$adapter->isConfigured() ? (string) $adapter->spaceId() : __( 'not configured', 'wallee-express-checkout' )
+				)
+			) . '</p>';
+			$shim_labels = array(
+				'active'      => __( 'active', 'wallee-express-checkout' ),
+				'not_needed'  => __( 'not needed', 'wallee-express-checkout' ),
+				'unavailable' => __( 'unavailable', 'wallee-express-checkout' ),
+			);
+			echo '<p>' . esc_html(
+				sprintf(
+					/* translators: %s: active, not needed or unavailable. */
+					__( 'SDK compatibility shim: %s', 'wallee-express-checkout' ),
+					$shim_labels[ SdkShim::status() ]
 				)
 			) . '</p>';
 		}

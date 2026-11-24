@@ -22,6 +22,9 @@ require_once WALLEE_EC_PATH . 'src/Autoloader.php';
 
 \Wallee\ExpressCheckout\Autoloader::register( WALLEE_EC_PATH . 'src' );
 
+// Load the SDK compatibility shim now, before the main plugin registers its SDK autoloader.
+\Wallee\ExpressCheckout\Compat\SdkShim::install();
+
 register_activation_hook(
 	WALLEE_EC_FILE,
 	static function () {

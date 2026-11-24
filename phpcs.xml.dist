@@ -3,6 +3,8 @@
 	<description>Coding standard for the wallee Express Checkout plugin.</description>
 
 	<file>plugin</file>
+	<!-- Mirrors third-party (wallee SDK) code style; still syntax-checked by bin/lint. -->
+	<exclude-pattern>plugin/wallee-express-checkout/compat/*</exclude-pattern>
 	<arg name="extensions" value="php"/>
 	<arg name="colors"/>
 	<arg value="sp"/>
