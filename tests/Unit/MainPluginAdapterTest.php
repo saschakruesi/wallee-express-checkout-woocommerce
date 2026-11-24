@@ -23,7 +23,7 @@ class FakeAdapter extends MainPluginAdapter {
 	public $methods = array();
 	/** @var string */
 	public $version = '3.4.11';
-	/** @var array<int|null> Local ID lookup results, consumed in order. */
+	/** @var array<array|null> Local row lookup results, consumed in order. */
 	public $lookups = array();
 	/** @var int */
 	public $syncs = 0;
@@ -40,7 +40,7 @@ class FakeAdapter extends MainPluginAdapter {
 		return $this->version;
 	}
 
-	protected function local_method_id( int $space_id, int $configuration_id ): ?int {
+	protected function local_method( int $space_id, int $configuration_id ): ?array {
 		return array_shift( $this->lookups );
 	}
 
@@ -174,19 +174,36 @@ class MainPluginAdapterTest extends TestCase {
 		$this->assertSame( 7, $a->spaceId() );
 	}
 
+	private function row( int $id, string $state = 'active' ): array {
+		return array(
+			'id'    => $id,
+			'state' => $state,
+		);
+	}
+
 	public function test_resolve_gateway_id_found_without_sync() {
 		$this->wc_with_gateways( array( 'wallee_5' ) );
 		$a          = new FakeAdapter();
-		$a->lookups = array( 5 );
+		$a->lookups = array( $this->row( 5 ) );
 		$this->assertSame( 'wallee_5', $a->resolveGatewayId( $this->transaction() ) );
 		$this->assertSame( 0, $a->syncs );
 	}
 
-	public function test_resolve_gateway_id_syncs_once_and_retries() {
-		$this->wc_with_gateways( array( 'wallee_5' ) );
+	public function test_resolve_gateway_id_syncs_once_and_accepts_unregistered_gateway() {
+		$this->wc_with_gateways( array() );
+		foreach ( array( 'active', 'inactive' ) as $state ) {
+			$a          = new FakeAdapter();
+			$a->lookups = array( null, $this->row( 5, $state ) );
+			$this->assertSame( 'wallee_5', $a->resolveGatewayId( $this->transaction() ), $state );
+			$this->assertSame( 1, $a->syncs );
+		}
+	}
+
+	public function test_resolve_gateway_id_null_when_post_sync_state_not_registrable() {
+		$this->wc_with_gateways( array() );
 		$a          = new FakeAdapter();
-		$a->lookups = array( null, 5 );
-		$this->assertSame( 'wallee_5', $a->resolveGatewayId( $this->transaction() ) );
+		$a->lookups = array( null, $this->row( 5, 'hidden' ) );
+		$this->assertNull( $a->resolveGatewayId( $this->transaction() ) );
 		$this->assertSame( 1, $a->syncs );
 	}
 
@@ -197,10 +214,11 @@ class MainPluginAdapterTest extends TestCase {
 		$this->assertSame( 1, $a->syncs );
 	}
 
-	public function test_resolve_gateway_id_null_when_gateway_not_registered() {
+	public function test_resolve_gateway_id_null_when_known_gateway_not_registered() {
 		$this->wc_with_gateways( array( 'wallee_6' ) );
 		$a          = new FakeAdapter();
-		$a->lookups = array( 5 );
+		$a->lookups = array( $this->row( 5 ) );
 		$this->assertNull( $a->resolveGatewayId( $this->transaction() ) );
+		$this->assertSame( 0, $a->syncs );
 	}
 }

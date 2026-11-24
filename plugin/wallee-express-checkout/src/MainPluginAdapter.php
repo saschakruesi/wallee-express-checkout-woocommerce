@@ -22,6 +22,13 @@ class MainPluginAdapter {
 	const TESTED_UP_TO = '3.4.11';
 
 	/**
+	 * Method configuration states for which the main plugin registers gateways.
+	 *
+	 * @var string[]
+	 */
+	const REGISTERED_STATES = array( 'active', 'inactive' );
+
+	/**
 	 * Log source.
 	 */
 	const LOG_SOURCE = 'wallee-express-checkout';
@@ -135,6 +142,7 @@ class MainPluginAdapter {
 	/**
 	 * The main plugin's authenticated SDK client (\Wallee\Sdk\ApiClient).
 	 *
+	 * @throws \Exception When the client cannot be built (for example missing credentials).
 	 * @return object
 	 */
 	public function sdkClient(): object {
@@ -164,10 +172,15 @@ class MainPluginAdapter {
 	/**
 	 * Resolves the main plugin gateway ID (`wallee_<local id>`) of a transaction.
 	 *
-	 * Synchronises the payment method configurations once on a miss.
+	 * If the configuration is known locally, the gateway must also be registered
+	 * in WooCommerce, otherwise null is returned. If it is only known after the
+	 * one-off synchronisation, the gateway cannot be in this request's registry
+	 * (the main plugin builds it from the database when WooCommerce first loads
+	 * the gateways). It is then accepted when the row's state is one the main
+	 * plugin registers gateways for; it is registered from the next request on.
 	 *
 	 * @param object $transaction v1 SDK Transaction.
-	 * @return string|null Null when unknown or the gateway is not registered.
+	 * @return string|null Null when unknown or the gateway is not (going to be) registered.
 	 */
 	public function resolveGatewayId( object $transaction ): ?string {
 		$connector = $transaction->getPaymentConnectorConfiguration();
@@ -179,19 +192,19 @@ class MainPluginAdapter {
 		$space_id         = (int) $transaction->getLinkedSpaceId();
 		$configuration_id = (int) $method->getId();
 
-		$local_id = $this->local_method_id( $space_id, $configuration_id );
-		if ( null === $local_id ) {
-			$this->syncPaymentMethods();
-			$local_id = $this->local_method_id( $space_id, $configuration_id );
+		$row = $this->local_method( $space_id, $configuration_id );
+		if ( null !== $row ) {
+			$gateways = WC()->payment_gateways()->payment_gateways();
+			return isset( $gateways[ 'wallee_' . $row['id'] ] ) ? 'wallee_' . $row['id'] : null;
 		}
-		if ( null === $local_id ) {
+
+		$this->syncPaymentMethods();
+		$row = $this->local_method( $space_id, $configuration_id );
+		if ( null === $row || ! in_array( $row['state'], self::REGISTERED_STATES, true ) ) {
 			return null;
 		}
 
-		$gateway_id = 'wallee_' . $local_id;
-		$gateways   = WC()->payment_gateways()->payment_gateways();
-
-		return isset( $gateways[ $gateway_id ] ) ? $gateway_id : null;
+		return 'wallee_' . $row['id'];
 	}
 
 	/**
@@ -221,16 +234,22 @@ class MainPluginAdapter {
 	}
 
 	/**
-	 * Local method configuration ID for a wallee configuration, or null.
+	 * Local method configuration row for a wallee configuration, or null.
 	 *
 	 * @param int $space_id          Space ID.
 	 * @param int $configuration_id  Payment method configuration ID.
-	 * @return int|null
+	 * @return array{id: int, state: string}|null
 	 */
-	protected function local_method_id( int $space_id, int $configuration_id ): ?int {
+	protected function local_method( int $space_id, int $configuration_id ): ?array {
 		$entity = \WC_Wallee_Entity_Method_Configuration::load_by_configuration( $space_id, $configuration_id );
 		$id     = $entity->get_id();
-		return empty( $id ) ? null : (int) $id;
+		if ( empty( $id ) ) {
+			return null;
+		}
+		return array(
+			'id'    => (int) $id,
+			'state' => (string) $entity->get_state(),
+		);
 	}
 
 	/**
