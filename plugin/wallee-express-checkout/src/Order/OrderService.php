@@ -102,6 +102,17 @@ class OrderService {
 	}
 
 	/**
+	 * See CouponHold::hold(), for the snapshot's coupons.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param \WC_Order    $order    Order with the customer's e-mail applied.
+	 * @return array{0: string, 1: string} CouponHold outcome and detail.
+	 */
+	public function holdCoupons( CartSnapshot $snapshot, \WC_Order $order ): array {
+		return CouponHold::hold( $snapshot->coupons(), $order );
+	}
+
+	/**
 	 * See OrderValidator::customerCoupons().
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.

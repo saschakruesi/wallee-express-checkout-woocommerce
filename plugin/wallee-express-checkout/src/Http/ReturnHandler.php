@@ -10,6 +10,8 @@ namespace Wallee\ExpressCheckout\Http;
 use Wallee\ExpressCheckout\Api\ApiClient;
 use Wallee\ExpressCheckout\Api\SdkTransport;
 use Wallee\ExpressCheckout\Api\ApiException;
+use Wallee\ExpressCheckout\Cart\CartSnapshot;
+use Wallee\ExpressCheckout\Order\CouponHold;
 use Wallee\ExpressCheckout\Order\CustomerDetails;
 use Wallee\ExpressCheckout\Order\FailedOrderSettlement;
 use Wallee\ExpressCheckout\Order\LinkScheduler;
@@ -666,28 +668,39 @@ final class ReturnHandler {
 			return OrderValidator::DESTINATION_CHANGED;
 		}
 
-		return $this->holdCoupons( $order );
+		return $this->holdCoupons( $snapshot, $order );
 	}
 
 	/**
-	 * Takes WooCommerce's tentative hold on the order's coupons for its
-	 * e-mail (WooCommerce 4.3 and later), as its checkout does, so parallel
-	 * orders cannot use up a limited coupon until the usage is recorded.
-	 * WooCommerce refuses the hold when a usage limit would be exceeded.
+	 * Takes WooCommerce's tentative hold on the order's coupons (the
+	 * snapshot's, never the session cart's) for its customer, as its checkout
+	 * does, so parallel orders cannot use up a limited coupon until the usage
+	 * is recorded. An order without coupons takes no hold.
 	 *
-	 * @param \WC_Order $order Order with the customer data applied.
-	 * @return string|null `coupon_invalid` if the hold is refused, else null.
+	 * A usage limit reached is the owner reason `coupon_invalid`. A hold that
+	 * fails for a technical reason is the technical reason `coupon_hold_failed`,
+	 * which never fails an order whose money is reserved or taken; the coupon
+	 * checks after payment still apply.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param \WC_Order    $order    Order with the customer data applied.
+	 * @return string|null Reason code, null if the hold was taken or not needed.
 	 */
-	private function holdCoupons( \WC_Order $order ): ?string {
-		if ( ! method_exists( $order, 'hold_applied_coupons' ) ) {
-			return null;
-		}
+	private function holdCoupons( CartSnapshot $snapshot, \WC_Order $order ): ?string {
 		try {
-			$order->hold_applied_coupons( (string) $order->get_billing_email() );
-		} catch ( \Exception $e ) {
-			$this->log( sprintf( 'Return: order %d: coupon hold refused (%s).', $order->get_id(), get_class( $e ) ), 'warning' );
+			$hold = $this->orders->holdCoupons( $snapshot, $order );
+		} catch ( \Throwable $e ) {
+			$hold = array( CouponHold::FAILED, get_class( $e ) );
+		}
+		if ( CouponHold::LIMIT === $hold[0] ) {
+			$this->log( sprintf( 'Return: order %d: coupon hold refused (usage limit reached).', $order->get_id() ), 'warning' );
 
 			return OrderValidator::COUPON_INVALID;
+		}
+		if ( CouponHold::FAILED === $hold[0] ) {
+			$this->log( sprintf( 'Return: order %d: coupon_hold_failed (%s).', $order->get_id(), $hold[1] ), 'error' );
+
+			return 'coupon_hold_failed';
 		}
 
 		return null;

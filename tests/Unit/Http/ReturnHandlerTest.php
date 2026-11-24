@@ -24,6 +24,7 @@ use Wallee\ExpressCheckout\Tests\Support\HoldingOrder;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
 require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
+require_once dirname( __DIR__, 2 ) . '/Support/wc-coupon-stub.php';
 
 /**
  * @covers \Wallee\ExpressCheckout\Http\ReturnHandler
@@ -853,33 +854,120 @@ class ReturnHandlerTest extends TestCase {
 	}
 
 	/**
-	 * Orders get WooCommerce's coupon hold; the hold throws the given error, if any.
+	 * Orders get WooCommerce's coupon hold as WooCommerce implements it (the
+	 * session cart's coupons) and a data store that records the held keys;
+	 * the snapshot coupon `save5` has a global and a per-user limit.
 	 *
-	 * @param \Throwable|null $error Error of hold_applied_coupons().
+	 * @param array $save5 Registry overrides of the snapshot coupon (`hold`, `hold_for_user`).
 	 */
-	private function holding_orders( ?\Throwable $error = null ): void {
+	private function holding_orders( array $save5 = array() ): void {
+		Functions\when( 'sanitize_email' )->returnArg();
+		\WC_Coupon_Data_Store_Stub::$holds = array();
+		\WC_Coupon::$registry              = array(
+			'save5' => array_merge(
+				array(
+					'id'                   => 7,
+					'usage_limit'          => 10,
+					'usage_limit_per_user' => 1,
+				),
+				$save5
+			),
+			'other' => array(
+				'id'                   => 8,
+				'usage_limit'          => 1,
+				'usage_limit_per_user' => 1,
+			),
+		);
 		$this->orders->order_class = HoldingOrder::class;
-		$this->orders->on_create   = static function ( HoldingOrder $order ) use ( $error ) {
-			$order->hold_error = $error;
+		$this->orders->on_create   = static function ( HoldingOrder $order ) {
+			$order->data_store = new class() {
+				/**
+				 * Saved keys: array( held, held for user ).
+				 *
+				 * @var array[]
+				 */
+				public $keys = array();
+
+				/**
+				 * Records the held keys.
+				 *
+				 * @param \WC_Order $order    Order.
+				 * @param array     $held     Global hold keys by coupon ID.
+				 * @param array     $for_user Per-user hold keys by coupon ID.
+				 */
+				public function set_coupon_held_keys( $order, $held, $for_user ) {
+					$this->keys[] = array( $held, $for_user );
+				}
+			};
 		};
 	}
 
-	public function test_a_valid_order_takes_woocommerces_coupon_hold_for_the_wallet_email() {
+	/**
+	 * Coupon codes the coupon data store was asked to hold.
+	 */
+	private static function held_codes(): array {
+		return array_map(
+			static function ( array $call ) {
+				return $call[0] . ':' . $call[1];
+			},
+			\WC_Coupon_Data_Store_Stub::$holds
+		);
+	}
+
+	public function test_a_valid_order_holds_the_snapshots_coupons_for_the_wallet_email() {
 		$this->holding_orders();
 
 		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
-		$this->assertSame( array( 'buyer@example.test' ), $this->orders->orders[501]->holds );
+		$this->assertSame( array( 'check_and_hold_coupon:save5', 'check_and_hold_coupon_for_user:save5' ), self::held_codes() );
+		$this->assertSame( array( 'buyer@example.test' ), \WC_Coupon_Data_Store_Stub::$holds[1][2] );
+		$this->assertSame( 'buyer@example.test', \WC_Coupon_Data_Store_Stub::$holds[1][3] );
+		$this->assertSame( array( array( array( 7 => 'held_save5' ), array( 7 => 'held_save5' ) ) ), $this->orders->orders[501]->data_store->keys );
 		$this->assertSame( array(), $this->orders->failed );
 	}
 
-	public function test_a_refused_coupon_hold_fails_the_order_as_coupon_invalid() {
-		$this->holding_orders( new \Exception( 'Coupon usage limit has been reached.' ) );
+	public function test_cart_coupons_that_differ_from_the_snapshots_are_not_held() {
+		$this->holding_orders();
+		$this->wc->cart->applied = array( 'other' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array( 'check_and_hold_coupon:save5', 'check_and_hold_coupon_for_user:save5' ), self::held_codes() );
+		$this->assertSame( array(), $this->orders->orders[501]->holds, 'the cart coupon is not held' );
+	}
+
+	public function test_a_product_page_purchase_ignores_an_unrelated_cart_coupon_at_its_limit() {
+		$this->holding_orders();
+		$data            = CartSnapshotTest::data();
+		$data['coupons'] = array();
+		$this->repository = new FakeSessionRepository( $data, array( 'shipping_quote' => self::quote() ) );
+		$this->wc->cart->applied = array( 'other' );
+		$previous                = $this->orders->on_create;
+		$this->orders->on_create = static function ( HoldingOrder $order ) use ( $previous ) {
+			$previous( $order );
+			$order->limit_reached = array( 'other' );
+		};
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertSame( array(), self::held_codes() );
+		$this->assertSame( array(), $this->orders->orders[501]->holds );
+	}
+
+	public function test_the_hold_needs_no_session_cart() {
+		$this->holding_orders();
+		$this->wc->cart = null;
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertCount( 2, self::held_codes() );
+	}
+
+	public function test_a_snapshot_coupon_at_its_limit_fails_the_order_as_coupon_invalid() {
+		$this->holding_orders( array( 'hold_for_user' => 0 ) );
 
 		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
 		$this->assertSame( 'error: The coupon in your cart cannot be used for this order. You have not been charged. Please remove the coupon or use the regular checkout.', $this->notices[0] );
-		$logs = implode( "\n", $this->logs );
-		$this->assertStringContainsString( 'Return: order 501: coupon hold refused (Exception).', $logs );
-		$this->assertStringNotContainsString( 'usage limit', $logs, 'the exception message is not logged' );
+		$this->assertStringContainsString( 'Return: order 501: coupon hold refused (usage limit reached).', implode( "\n", $this->logs ) );
+		$this->assertSame( array( array( array( 7 => 'held_save5' ), array() ) ), $this->orders->orders[501]->data_store->keys, 'the hold already taken is saved, so it is released with the order' );
 	}
 
 	/**
@@ -887,8 +975,8 @@ class ReturnHandlerTest extends TestCase {
 	 *
 	 * @param string $state Transaction state.
 	 */
-	public function test_a_refused_coupon_hold_with_money_taken_asks_for_a_refund( string $state ) {
-		$this->holding_orders( new \Exception( 'Coupon usage limit has been reached.' ) );
+	public function test_a_snapshot_coupon_at_its_limit_with_money_taken_asks_for_a_refund( string $state ) {
+		$this->holding_orders( array( 'hold' => 0 ) );
 		$this->api->transaction['state'] = $state;
 
 		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
@@ -897,12 +985,47 @@ class ReturnHandlerTest extends TestCase {
 		$this->assertSame( 'error: ' . self::PAID_NOTICE, $this->notices[0] );
 	}
 
+	/**
+	 * A hold that fails for a technical reason (the data store returns false
+	 * or throws) never fails a paid order.
+	 *
+	 * @dataProvider technical_hold_failures
+	 *
+	 * @param mixed  $result Scripted data-store result.
+	 * @param string $state  Transaction state.
+	 */
+	public function test_a_technical_hold_failure_keeps_a_paid_order( $result, string $state ) {
+		$this->holding_orders( array( 'hold' => $result ) );
+		$this->api->transaction['state'] = $state;
+
+		$this->assertSame( SessionService::resultUrl( self::UUID, 'success' ), $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertStringContainsString( 'coupon_hold_failed', implode( "\n", $this->logs ) );
+	}
+
+	public function technical_hold_failures(): array {
+		return array(
+			'false, authorized'     => array( false, 'AUTHORIZED' ),
+			'exception, completed'  => array( new \RuntimeException( 'db' ), 'COMPLETED' ),
+			'false, fulfill'        => array( false, 'FULFILL' ),
+		);
+	}
+
+	public function test_a_technical_hold_failure_before_payment_is_a_technical_failure() {
+		$this->holding_orders( array( 'hold' => false ) );
+
+		$this->assertFailedBeforePayment( 'coupon_hold_failed', $this->handler()->handle( $this->query() ) );
+		$this->assertNotContains( 'voidTransaction', $this->api->methods() );
+		$this->assertSame( 'error: ' . self::TECHNICAL . ' ' . self::NOT_CHARGED . ' Please try again or use the regular checkout.', $this->notices[0] );
+	}
+
 	public function test_no_coupon_hold_is_taken_when_the_coupon_check_fails() {
 		$this->holding_orders();
 		$this->orders->coupon_reason = 'coupon_invalid';
 
 		$this->assertFailedBeforePayment( 'coupon_invalid', $this->handler()->handle( $this->query() ) );
-		$this->assertSame( array(), $this->orders->orders[501]->holds );
+		$this->assertSame( array(), self::held_codes() );
 	}
 
 	public function test_no_coupon_hold_is_taken_when_the_destination_changed() {
@@ -910,7 +1033,7 @@ class ReturnHandlerTest extends TestCase {
 		$this->api->transaction['shippingAddress'] = array( 'country' => 'DE' );
 
 		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
-		$this->assertSame( array(), $this->orders->orders[501]->holds );
+		$this->assertSame( array(), self::held_codes() );
 	}
 
 	public function test_coupons_are_not_rechecked_without_an_email() {

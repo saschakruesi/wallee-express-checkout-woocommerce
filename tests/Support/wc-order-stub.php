@@ -32,6 +32,7 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $customer_id          = 0;
 		public $products             = array();
 		public $save_error           = null;
+		public $data_store           = null;
 
 		public function __construct( int $id = 0, $total = 0.0 ) {
 			$this->id    = $id;
@@ -158,6 +159,10 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 			}
 			++$this->saves;
 			return $this->id;
+		}
+
+		public function get_data_store() {
+			return $this->data_store;
 		}
 
 		public function get_checkout_order_received_url() {

@@ -27,12 +27,34 @@ class FakeWc {
 	public $countries;
 
 	/**
+	 * Session cart: `applied` holds the applied coupon codes; null when WooCommerce has no cart.
+	 *
+	 * @var object|null
+	 */
+	public $cart;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param bool $has_session Whether the customer already has a session.
 	 */
 	public function __construct( bool $has_session = false ) {
 		$this->session   = new FakeWcSession( $has_session );
+		$this->cart      = new class() {
+			/**
+			 * Applied coupon codes.
+			 *
+			 * @var string[]
+			 */
+			public $applied = array();
+
+			/**
+			 * Applied coupon codes.
+			 */
+			public function get_applied_coupons() {
+				return $this->applied;
+			}
+		};
 		$this->countries = (object) array(
 			'countries' => array(
 				'CH' => 'Switzerland',

@@ -25,7 +25,10 @@ if ( ! class_exists( 'WC_Coupon', false ) ) {
 
 		public $props;
 
+		public $code;
+
 		public function __construct( $code ) {
+			$this->code  = $code;
 			$this->props = array_merge(
 				array(
 					'id'                   => 0,
@@ -34,6 +37,9 @@ if ( ! class_exists( 'WC_Coupon', false ) ) {
 					'usage_limit_per_user' => 0,
 					'usage_by_email'       => array(),
 					'usage_by_user'        => array(),
+					'usage_limit'          => 0,
+					'hold'                 => null,
+					'hold_for_user'        => null,
 				),
 				isset( self::$registry[ $code ] ) ? self::$registry[ $code ] : array()
 			);
@@ -41,6 +47,14 @@ if ( ! class_exists( 'WC_Coupon', false ) ) {
 
 		public function get_id() {
 			return $this->props['id'];
+		}
+
+		public function get_code() {
+			return $this->code;
+		}
+
+		public function get_usage_limit() {
+			return $this->props['usage_limit'];
 		}
 
 		public function get_email_restrictions() {
@@ -65,6 +79,38 @@ if ( ! class_exists( 'WC_Coupon', false ) ) {
 	}
 
 	class WC_Coupon_Data_Store_Stub {
+
+		/**
+		 * Hold calls: array( method, code, aliases, alias ).
+		 *
+		 * @var array[]
+		 */
+		public static $holds = array();
+
+		/**
+		 * Scripted result of a hold: `hold` / `hold_for_user` of the coupon, a
+		 * Throwable is thrown, null (the default) gives a key.
+		 */
+		private static function result( $coupon, $prop ) {
+			$result = $coupon->props[ $prop ];
+			if ( $result instanceof \Throwable ) {
+				throw $result;
+			}
+
+			return null === $result ? 'held_' . $coupon->code : $result;
+		}
+
+		public function check_and_hold_coupon( $coupon ) {
+			self::$holds[] = array( 'check_and_hold_coupon', $coupon->code );
+
+			return self::result( $coupon, 'hold' );
+		}
+
+		public function check_and_hold_coupon_for_user( $coupon, $aliases, $alias ) {
+			self::$holds[] = array( 'check_and_hold_coupon_for_user', $coupon->code, $aliases, $alias );
+
+			return self::result( $coupon, 'hold_for_user' );
+		}
 
 		public function get_usage_by_email( $coupon, $email ) {
 			return isset( $coupon->props['usage_by_email'][ $email ] ) ? $coupon->props['usage_by_email'][ $email ] : 0;
