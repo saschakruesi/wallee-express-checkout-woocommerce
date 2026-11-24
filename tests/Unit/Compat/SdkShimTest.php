@@ -124,7 +124,7 @@ class SdkShimTest extends TestCase {
 
 	public function test_compat_class_declares_sdk_values_plus_express_checkout(): void {
 		$file = dirname( __DIR__, 3 ) . '/plugin/wallee-express-checkout/compat/TransactionUserInterfaceType.php';
-		$script = 'require ' . var_export( $file, true ) . '; echo json_encode( \\Wallee\\Sdk\\Model\\TransactionUserInterfaceType::getAllowableEnumValues() );';
+		$script = "define( 'ABSPATH', '/' ); " . 'require ' . var_export( $file, true ) . '; echo json_encode( \\Wallee\\Sdk\\Model\\TransactionUserInterfaceType::getAllowableEnumValues() );';
 		$output = shell_exec( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $script ) );
 		$this->assertSame(
 			array( 'IFRAME', 'LIGHTBOX', 'PAYMENT_PAGE', 'MOBILE_SDK', 'TERMINAL', 'EXPRESS_CHECKOUT' ),

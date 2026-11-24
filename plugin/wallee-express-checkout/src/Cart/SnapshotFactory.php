@@ -41,7 +41,7 @@ final class SnapshotFactory {
 		// and any shop rules hooked to the same action.
 		if ( ! self::passesValidation(
 			static function () {
-				do_action( 'woocommerce_check_cart_items' );
+				do_action( 'woocommerce_check_cart_items' ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WooCommerce's own hook, run on purpose to validate the cart.
 
 				return true;
 			}
@@ -158,8 +158,8 @@ final class SnapshotFactory {
 			static function () use ( $is_variable, $product_id, $quantity, $variation_id, $attributes ) {
 				// The same argument lists WooCommerce's add-to-cart handlers use.
 				return $is_variable
-					? apply_filters( 'woocommerce_add_to_cart_validation', true, $product_id, $quantity, $variation_id, $attributes )
-					: apply_filters( 'woocommerce_add_to_cart_validation', true, $product_id, $quantity );
+					? apply_filters( 'woocommerce_add_to_cart_validation', true, $product_id, $quantity, $variation_id, $attributes ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WooCommerce's own hook, run on purpose.
+					: apply_filters( 'woocommerce_add_to_cart_validation', true, $product_id, $quantity ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WooCommerce's own hook, run on purpose.
 			}
 		);
 		if ( ! $valid ) {
