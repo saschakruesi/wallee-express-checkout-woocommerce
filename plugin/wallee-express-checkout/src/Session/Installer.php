@@ -20,10 +20,12 @@ final class Installer {
 	const RETENTION_DAYS = 7;
 
 	/**
-	 * Hooks upgrade check and cleanup handler.
+	 * Hooks upgrade check and cleanup handler. The check runs on every
+	 * request (`init`, one option compare), not only in the admin: after a
+	 * file deploy the next shopper must not hit an old schema.
 	 */
 	public static function register(): void {
-		add_action( 'admin_init', array( __CLASS__, 'maybeUpgrade' ) );
+		add_action( 'init', array( __CLASS__, 'maybeUpgrade' ) );
 		add_action( self::CRON_HOOK, array( __CLASS__, 'cleanup' ) );
 	}
 
@@ -68,7 +70,7 @@ final class Installer {
 	}
 
 	/**
-	 * Runs install() when the stored schema version is behind. Hooked to `admin_init`.
+	 * Runs install() when the stored schema version is behind. Hooked to `init`.
 	 */
 	public static function maybeUpgrade(): void {
 		if ( get_option( self::DB_VERSION_KEY ) !== self::DB_VERSION ) {

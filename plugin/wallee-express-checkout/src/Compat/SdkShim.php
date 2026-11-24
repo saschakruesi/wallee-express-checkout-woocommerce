@@ -90,7 +90,7 @@ final class SdkShim {
 			if ( false !== strpos( $contents, self::VALUE ) ) {
 				return null;
 			}
-			preg_match_all( '/^\s*const\s+([A-Z0-9_]+)\s*=/m', $contents, $matches );
+			preg_match_all( '/^\s*(?:(?:public|protected|private)\s+)?const\s+([A-Za-z0-9_]+)\s*=/mi', $contents, $matches );
 			return array() === array_diff( $matches[1], self::KNOWN_CONSTANTS ) ? $path : null;
 		}
 		return null;
@@ -110,8 +110,10 @@ final class SdkShim {
 	}
 
 	/**
-	 * Status for display and the admin warning: 'active' (our copy is loaded), 'not_needed'
-	 * (the SDK already knows the value) or 'unavailable' (the SDK cannot read Express Checkout transactions).
+	 * Status for display, the admin warning and Plugin::isActive(): 'active' (our copy is loaded),
+	 * 'not_needed' (the SDK already knows the value) or 'unavailable' (the SDK cannot read Express
+	 * Checkout transactions). The filter `wallee_ec_enable_sdk_shim` is the operator's switch: when it
+	 * returns false the shim counts as off even if our copy got loaded before the filter was added.
 	 *
 	 * Only call once the main plugin's SDK autoloader is registered (plugins_loaded or later).
 	 *
@@ -119,7 +121,7 @@ final class SdkShim {
 	 */
 	public static function status(): string {
 		if ( self::isActive() ) {
-			return 'active';
+			return apply_filters( 'wallee_ec_enable_sdk_shim', true ) ? 'active' : 'unavailable';
 		}
 		if ( class_exists( self::ENUM_CLASS ) && in_array( self::VALUE, call_user_func( array( self::ENUM_CLASS, 'getAllowableEnumValues' ) ), true ) ) {
 			return 'not_needed';

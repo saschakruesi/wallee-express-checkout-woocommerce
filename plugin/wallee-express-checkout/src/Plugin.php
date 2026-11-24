@@ -51,28 +51,51 @@ final class Plugin {
 			return;
 		}
 
-		if ( self::adapter()->isNewerThanTested() ) {
-			self::notice(
+		foreach ( self::statusNotices( self::adapter(), Compat\SdkShim::status() ) as $notice ) {
+			self::notice( $notice[0], $notice[1], $notice[2] );
+		}
+
+		self::register_components();
+	}
+
+	/**
+	 * Admin notices for a usable main plugin: untested version, missing
+	 * credentials, unavailable SDK shim.
+	 *
+	 * @param MainPluginAdapter $adapter     Adapter.
+	 * @param string            $shim_status Result of Compat\SdkShim::status().
+	 * @return array<int, array{0: string, 1: string, 2: bool}> CSS class, message, dismissible.
+	 */
+	public static function statusNotices( MainPluginAdapter $adapter, string $shim_status ): array {
+		$notices = array();
+		if ( $adapter->isNewerThanTested() ) {
+			$notices[] = array(
 				'notice-warning',
 				sprintf(
 					/* translators: 1: installed wallee plugin version, 2: last tested version. */
 					__( 'wallee Express Checkout was tested up to wallee plugin version %2$s, but version %1$s is installed. Please test express checkout before relying on it.', 'wallee-express-checkout' ),
-					self::adapter()->version(),
+					$adapter->version(),
 					MainPluginAdapter::TESTED_UP_TO
 				),
-				true
+				true,
 			);
 		}
-
-		if ( 'unavailable' === Compat\SdkShim::status() ) {
-			self::notice(
+		if ( ! $adapter->isConfigured() ) {
+			$notices[] = array(
 				'notice-warning',
-				__( "The wallee plugin's SDK cannot read Express Checkout transactions and the compatibility shim is not active.", 'wallee-express-checkout' ),
-				false
+				__( 'wallee Express Checkout buttons stay hidden until the wallee plugin is configured with a space ID, an application user ID and its key.', 'wallee-express-checkout' ),
+				false,
+			);
+		}
+		if ( 'unavailable' === $shim_status ) {
+			$notices[] = array(
+				'notice-error',
+				__( "wallee Express Checkout is disabled: the wallee plugin's SDK cannot read Express Checkout transactions and the compatibility shim is not active, so the buttons are not shown.", 'wallee-express-checkout' ),
+				false,
 			);
 		}
 
-		self::register_components();
+		return $notices;
 	}
 
 	/**
@@ -100,12 +123,17 @@ final class Plugin {
 	}
 
 	/**
-	 * Whether the main plugin is usable and configured.
+	 * Whether express checkout may run: the main plugin is usable and
+	 * configured, and its SDK can read Express Checkout transactions (without
+	 * that, every webhook for these transactions would fail and could get the
+	 * space's webhook listener deactivated, which also hits normal orders).
 	 *
 	 * @return bool
 	 */
 	public static function isActive(): bool {
-		return array() === self::adapter()->missingRequirements() && self::adapter()->isConfigured();
+		return array() === self::adapter()->missingRequirements()
+			&& self::adapter()->isConfigured()
+			&& 'unavailable' !== Compat\SdkShim::status();
 	}
 
 	/**
@@ -138,7 +166,7 @@ final class Plugin {
 		add_action(
 			'admin_notices',
 			static function () use ( $class_name, $message, $dismissible ) {
-				if ( ! current_user_can( 'manage_options' ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) { // phpcs:ignore WordPress.WP.Capabilities.Unknown
 					return;
 				}
 				printf(

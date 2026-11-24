@@ -92,6 +92,24 @@ class SdkShimTest extends TestCase {
 		$this->assertNull( SdkShim::sdkFileToShim( array( 'woo-wallee/wallee.php' ), $this->base, $this->reader() ) );
 	}
 
+	public function test_visibility_modifiers_are_recognised(): void {
+		$this->make_sdk( 'woo-wallee', "    public const IFRAME = 'IFRAME';\n    public const NEW_VALUE = 'NEW_VALUE';\n" );
+		$this->assertNull( SdkShim::sdkFileToShim( array( 'woo-wallee/wallee.php' ), $this->base, $this->reader() ) );
+
+		$this->rrmdir( $this->base . '/woo-wallee' );
+		$file = $this->make_sdk( 'woo-wallee', "    public const IFRAME = 'IFRAME';\n    private const TERMINAL = 'TERMINAL';\n" );
+		$this->assertSame( $file, SdkShim::sdkFileToShim( array( 'woo-wallee/wallee.php' ), $this->base, $this->reader() ) );
+	}
+
+	public function test_lower_and_mixed_case_constants_are_unknown(): void {
+		$this->make_sdk( 'woo-wallee', "const IFRAME = 'IFRAME';\n    const new_value = 'new_value';\n" );
+		$this->assertNull( SdkShim::sdkFileToShim( array( 'woo-wallee/wallee.php' ), $this->base, $this->reader() ) );
+
+		$this->rrmdir( $this->base . '/woo-wallee' );
+		$this->make_sdk( 'woo-wallee', "PROTECTED CONST Mixed_Value = 'x';\n" );
+		$this->assertNull( SdkShim::sdkFileToShim( array( 'woo-wallee/wallee.php' ), $this->base, $this->reader() ) );
+	}
+
 	public function test_rejects_traversal_absolute_and_non_string_entries(): void {
 		$this->make_sdk( 'evil', "const IFRAME = 'IFRAME';" );
 		$entries = array( '../evil/wallee.php', 'a/../../evil/wallee.php', $this->base . '/evil/wallee.php', '/evil/wallee.php', 'wallee.php', 'a\\b/wallee.php', 42, null );
