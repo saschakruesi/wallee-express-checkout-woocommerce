@@ -32,23 +32,42 @@ final class OrderFactory {
 	/**
 	 * Creates the order, status `pending`, without addresses.
 	 *
-	 * The caller compares `$order->get_total()` with the approved amount. If
-	 * WooCommerce arrives at another total, the order is returned as it is.
+	 * All lines are built before the order exists, so a line that cannot be
+	 * booked leaves nothing behind. The caller compares `$order->get_total()`
+	 * with the approved amount. If WooCommerce arrives at another total, the
+	 * order is returned as it is.
 	 *
 	 * @param CartSnapshot $snapshot Snapshot.
 	 * @param array|null   $rate     Stored rate of the selected shipping option, null if none.
 	 * @param string       $uuid     Express checkout session UUID.
 	 * @param string       $wallet   Wallet name.
-	 * @throws \RuntimeException If a product no longer exists or the order cannot be created.
+	 * @throws \RuntimeException With message `tax_rate_changed` if a tax amount cannot be booked under the
+	 *                           WooCommerce tax rates that exist now. In every case no order remains.
+	 * @throws \RuntimeException With another message if a product no longer exists or the order cannot be created.
+	 * @throws \Throwable Whatever fails while the order is filled, after the order is deleted.
 	 */
 	public static function create( CartSnapshot $snapshot, ?array $rate, string $uuid, string $wallet ): \WC_Order {
-		$products = array();
-		foreach ( $snapshot->items() as $index => $item ) {
+		$decimals = Money::decimals( $snapshot->currency() );
+		$location = $snapshot->taxLocation();
+
+		$lines    = array();
+		$discount = 0.0;
+		foreach ( $snapshot->items() as $item ) {
 			$product = wc_get_product( $item['variation_id'] > 0 ? $item['variation_id'] : $item['product_id'] );
 			if ( ! $product instanceof \WC_Product ) {
 				throw new \RuntimeException( 'A product of the cart no longer exists.' );
 			}
-			$products[ $index ] = $product;
+			$discount += $item['line_subtotal'] - $item['line_total'];
+			$lines[]   = self::product_item( $product, $item, $location, $decimals );
+		}
+		foreach ( $snapshot->fees() as $fee ) {
+			$lines[] = self::fee_item( $fee, $location, $decimals );
+		}
+		foreach ( self::coupon_items( $snapshot, Money::round( $discount, $decimals ) ) as $coupon_item ) {
+			$lines[] = $coupon_item;
+		}
+		if ( null !== $rate ) {
+			$lines[] = self::shipping_item( $rate, $location, $decimals );
 		}
 
 		$order = wc_create_order(
@@ -63,33 +82,22 @@ final class OrderFactory {
 			throw new \RuntimeException( 'The order could not be created.' );
 		}
 
-		$decimals = Money::decimals( $snapshot->currency() );
-		$location = $snapshot->taxLocation();
+		try {
+			$order->set_prices_include_tax( $snapshot->pricesIncludeTax() );
+			$order->set_payment_method( self::GATEWAY_ID );
+			$order->set_payment_method_title( self::GATEWAY_TITLE );
+			foreach ( $lines as $line ) {
+				$order->add_item( $line );
+			}
+			$order->update_meta_data( self::META_SESSION, $uuid );
+			$order->update_meta_data( self::META_WALLET, sanitize_text_field( $wallet ) );
 
-		$order->set_prices_include_tax( $snapshot->pricesIncludeTax() );
-		$order->set_payment_method( self::GATEWAY_ID );
-		$order->set_payment_method_title( self::GATEWAY_TITLE );
-
-		$discount = 0.0;
-		foreach ( $snapshot->items() as $index => $item ) {
-			$discount += $item['line_subtotal'] - $item['line_total'];
-			$order->add_item( self::product_item( $products[ $index ], $item, $location, $decimals ) );
+			$order->update_taxes();
+			$order->calculate_totals( false );
+		} catch ( \Throwable $e ) {
+			$order->delete( true );
+			throw $e;
 		}
-		foreach ( $snapshot->fees() as $fee ) {
-			$order->add_item( self::fee_item( $fee, $location, $decimals ) );
-		}
-		foreach ( self::coupon_items( $snapshot, Money::round( $discount, $decimals ) ) as $coupon_item ) {
-			$order->add_item( $coupon_item );
-		}
-		if ( null !== $rate ) {
-			$order->add_item( self::shipping_item( $rate, $location, $decimals ) );
-		}
-
-		$order->update_meta_data( self::META_SESSION, $uuid );
-		$order->update_meta_data( self::META_WALLET, sanitize_text_field( $wallet ) );
-
-		$order->update_taxes();
-		$order->calculate_totals( false );
 
 		return $order;
 	}
@@ -195,9 +203,8 @@ final class OrderFactory {
 		$line->set_subtotal( $item['line_subtotal'] );
 		$line->set_total( $item['line_total'] );
 
-		$rates = self::rate_percentages( $item['tax_rates'], $location, $item['tax_class'], false );
-		$total = self::allocate( $item['line_tax'], $rates, $decimals );
-		$sub   = self::allocate( $item['line_subtotal_tax'], $rates, $decimals );
+		$total = self::book_taxes( $item['line_tax'], $item['tax_rates'], $location, $item['tax_class'], false, $decimals );
+		$sub   = self::book_taxes( $item['line_subtotal_tax'], $item['tax_rates'], $location, $item['tax_class'], false, $decimals );
 		if ( array() !== $total || array() !== $sub ) {
 			$line->set_taxes(
 				array(
@@ -205,13 +212,6 @@ final class OrderFactory {
 					'total'    => $total,
 				)
 			);
-		}
-		// Without a rate ID to book them under, the amounts are still kept.
-		if ( array() === $total ) {
-			$line->set_total_tax( $item['line_tax'] );
-		}
-		if ( array() === $sub ) {
-			$line->set_subtotal_tax( $item['line_subtotal_tax'] );
 		}
 
 		$line->add_meta_data( self::META_UNIQUE_ID, LineItemBuilder::uniqueIdFor( 'item', $item['key'] ), true );
@@ -232,11 +232,9 @@ final class OrderFactory {
 		$line->set_total( $fee['total'] );
 		$line->set_tax_status( array() !== $fee['tax_rates'] || $fee['tax'] > 0 ? 'taxable' : 'none' );
 
-		$total = self::allocate( $fee['tax'], self::rate_percentages( $fee['tax_rates'], $location, null, false ), $decimals );
+		$total = self::book_taxes( $fee['tax'], $fee['tax_rates'], $location, null, false, $decimals );
 		if ( array() !== $total ) {
 			$line->set_taxes( array( 'total' => $total ) );
-		} else {
-			$line->set_total_tax( $fee['tax'] );
 		}
 
 		$line->add_meta_data( self::META_UNIQUE_ID, LineItemBuilder::uniqueIdFor( 'fee', $fee['id'] ), true );
@@ -292,16 +290,40 @@ final class OrderFactory {
 		$line->set_total( (float) $rate['cost'] );
 
 		$tax_rates = isset( $rate['tax_rates'] ) && is_array( $rate['tax_rates'] ) ? $rate['tax_rates'] : array();
-		$total     = self::allocate( (float) $rate['tax'], self::rate_percentages( $tax_rates, $location, null, true ), $decimals );
+		$total     = self::book_taxes( (float) $rate['tax'], $tax_rates, $location, null, true, $decimals );
 		if ( array() !== $total ) {
 			$line->set_taxes( array( 'total' => $total ) );
-		} else {
-			$line->set_total_tax( (float) $rate['tax'] );
 		}
 
 		$line->add_meta_data( self::META_UNIQUE_ID, 'shipping-' . $id, true );
 
 		return $line;
+	}
+
+	/**
+	 * Books a stored tax amount under the WooCommerce tax rates that exist now.
+	 *
+	 * @param float       $amount    Tax amount.
+	 * @param array       $tax_rates List of label and rate from the snapshot or the stored rate.
+	 * @param array       $location  Tax location.
+	 * @param string|null $tax_class Tax class tried first, null for none.
+	 * @param bool        $shipping  Whether to look at shipping rates.
+	 * @param int         $decimals  Decimal places.
+	 * @return array<int|string, float> Rate ID => amount, empty if there is no tax to book.
+	 * @throws \RuntimeException With message `tax_rate_changed` if there is tax to book and not every
+	 *                           tax rate of the line still exists.
+	 */
+	private static function book_taxes( float $amount, array $tax_rates, array $location, ?string $tax_class, bool $shipping, int $decimals ): array {
+		if ( abs( $amount ) < 0.5 * pow( 10, -$decimals ) ) {
+			return array();
+		}
+
+		$rates = self::rate_percentages( $tax_rates, $location, $tax_class, $shipping );
+		if ( array() === $tax_rates || count( $rates ) !== count( $tax_rates ) ) {
+			throw new \RuntimeException( 'tax_rate_changed' );
+		}
+
+		return self::allocate( $amount, $rates, $decimals );
 	}
 
 	/**

@@ -263,6 +263,25 @@ class SessionRepositoryTest extends TestCase {
 		$this->assertNull( $this->repo()->findByUuid( str_repeat( 'b', 64 ) )->shippingQuote() );
 	}
 
+	public function test_store_quote_is_one_conditional_update_on_a_created_row() {
+		$this->db->next_rows_affected = 1;
+		$quote                        = array( 'destination' => array( 'country' => 'CH' ), 'rates' => array() );
+
+		$this->assertTrue( $this->repo()->storeQuote( 7, $quote ) );
+		$this->assertCount( 1, $this->db->queries );
+		$this->assertMatchesRegularExpression(
+			"/^UPDATE wp_wallee_ec_session SET shipping_quote = '.*', updated_at = '\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}' WHERE id = 7 AND state = 'created'$/",
+			$this->db->queries[0]
+		);
+		$this->assertStringContainsString( addslashes( json_encode( $quote ) ), $this->db->queries[0] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+	}
+
+	public function test_store_quote_is_false_when_no_row_matched() {
+		$this->db->next_rows_affected = 0;
+
+		$this->assertFalse( $this->repo()->storeQuote( 7, array( 'rates' => array() ) ) );
+	}
+
 	public function test_purge_older_than_deletes_by_cutoff_and_returns_count() {
 		$this->db->next_rows_affected = 3;
 

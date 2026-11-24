@@ -160,6 +160,36 @@ final class SessionRepository {
 	}
 
 	/**
+	 * Stores the shipping quote, only while the row is still in state `created`.
+	 *
+	 * One conditional UPDATE, so a quote cannot be written after the state changed.
+	 *
+	 * @param int   $id    Row ID.
+	 * @param array $quote Destination and rates.
+	 * @return bool Whether this call changed the row.
+	 * @throws \RuntimeException If the quote cannot be encoded as JSON.
+	 */
+	public function storeQuote( int $id, array $quote ): bool {
+		$json = wp_json_encode( $quote );
+		if ( false === $json ) {
+			throw new \RuntimeException( 'Shipping quote could not be encoded to JSON.' );
+		}
+
+		$table  = $this->table();
+		$result = $this->db->query(
+			$this->db->prepare(
+				"UPDATE {$table} SET shipping_quote = %s, updated_at = %s WHERE id = %d AND state = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is the prefix plus a constant.
+				$json,
+				gmdate( 'Y-m-d H:i:s' ),
+				$id,
+				SessionRecord::CREATED
+			)
+		);
+
+		return 1 === $result;
+	}
+
+	/**
 	 * Updates state, order ID, transaction ID and/or shipping quote.
 	 *
 	 * @param int   $id     Row ID.

@@ -302,27 +302,44 @@ class ShippingControllerTest extends TestCase {
 		}
 	}
 
-	public function test_a_successful_calculation_stores_destination_and_rates_as_the_quote() {
+	/**
+	 * Statements that write the quote.
+	 *
+	 * @return string[]
+	 */
+	private function quote_writes(): array {
+		return array_values(
+			array_filter(
+				$this->db->queries,
+				static function ( $query ) {
+					return 0 === strpos( $query, 'UPDATE wp_wallee_ec_session SET shipping_quote' );
+				}
+			)
+		);
+	}
+
+	public function test_a_successful_calculation_stores_destination_and_rates_as_the_quote_while_the_row_is_created() {
 		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+		$this->db->next_rows_affected = 1;
 
 		$this->handle( $this->body( array( 'state' => 'ZH' ) ) );
 
-		$this->assertSame( 'UPDATE wp_wallee_ec_session', end( $this->db->queries ) );
-		$this->assertSame( 1, $this->db->last_update[2]['id'] );
-		$this->assertSame(
-			json_encode( // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
-				array(
-					'destination' => array(
-						'country'  => 'CH',
-						'state'    => 'ZH',
-						'postcode' => '8000',
-						'city'     => 'Zurich',
-					),
-					'rates'       => array( $this->rate() ),
-				)
-			),
-			$this->db->last_update[1]['shipping_quote']
+		$json = json_encode( // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+			array(
+				'destination' => array(
+					'country'  => 'CH',
+					'state'    => 'ZH',
+					'postcode' => '8000',
+					'city'     => 'Zurich',
+				),
+				'rates'       => array( $this->rate() ),
+			)
 		);
+		$writes = $this->quote_writes();
+		$this->assertCount( 1, $writes );
+		$this->assertStringContainsString( "SET shipping_quote = '" . addslashes( $json ) . "'", $writes[0] );
+		$this->assertMatchesRegularExpression( "/ WHERE id = 1 AND state = 'created'$/", $writes[0] );
+		$this->assertSame( array(), $this->logs );
 	}
 
 	public function test_no_rates_store_no_quote() {
@@ -331,19 +348,30 @@ class ShippingControllerTest extends TestCase {
 
 		$this->handle( $this->body() );
 
-		$this->assertNull( $this->db->last_update );
+		$this->assertSame( array(), $this->quote_writes() );
 	}
 
-	public function test_a_failed_store_is_logged_and_the_response_is_unchanged() {
+	public function test_a_quote_that_matches_no_open_row_is_logged_and_the_response_is_unchanged() {
 		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
-		$this->db->next_update_result = false;
+		$this->db->next_rows_affected = 0;
 
 		$result = $this->handle( $this->body() );
 
 		$this->assertSame( 200, $result['status'] );
 		$this->assertSame( 'flat_rate:1', $result['body']['shippingOptions'][0]['id'] );
 		$this->assertCount( 1, $this->logs );
-		$this->assertStringContainsString( 'could not be stored', $this->logs[0] );
+		$this->assertStringContainsString( 'was not stored', $this->logs[0] );
 		$this->assertStringNotContainsString( 'Zurich', $this->logs[0] );
+	}
+
+	public function test_a_store_that_throws_is_logged_and_the_response_is_unchanged() {
+		$this->provider->method( 'ratesFor' )->willReturn( array( $this->rate() ) );
+		Functions\when( 'wp_json_encode' )->justReturn( false );
+
+		$result = $this->handle( $this->body() );
+
+		$this->assertSame( 200, $result['status'] );
+		$this->assertCount( 1, $this->logs );
+		$this->assertStringContainsString( 'could not be stored', $this->logs[0] );
 	}
 }

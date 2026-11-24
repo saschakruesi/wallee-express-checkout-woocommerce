@@ -198,6 +198,38 @@ class OrderValidatorTest extends TestCase {
 		$this->assertNull( OrderValidator::check( $this->snapshot(), $session, $this->quote() ) );
 	}
 
+	public function test_numeric_strings_are_accepted_as_amounts() {
+		$session                                                = $this->session( array( 'authorizationAmount' => '58.11' ) );
+		$session['shippingOptions'][0]['amountIncludingTax'] = '8.11';
+		$this->assertNull( OrderValidator::check( $this->snapshot(), $session, $this->quote() ) );
+	}
+
+	public function test_a_quote_with_an_empty_rate_list_is_shipping_changed_and_one_without_rates_is_missing() {
+		$quote          = $this->quote();
+		$quote['rates'] = array();
+		$this->assertSame( 'shipping_changed', OrderValidator::check( $this->snapshot(), $this->session(), $quote ) );
+		$this->assertSame( 'shipping_missing', OrderValidator::check( $this->snapshot(), $this->session(), $quote ) );
+		$this->assertSame( 'shipping_missing', OrderValidator::check( $this->snapshot(), $this->session(), array( 'destination' => array() ) ) );
+	}
+
+	public function test_a_quote_whose_rates_is_not_an_array_is_shipping_missing() {
+		$this->assertSame( 'shipping_missing', OrderValidator::check( $this->snapshot(), $this->session(), array( 'rates' => 'oops' ) ) );
+	}
+
+	public function test_a_free_rate_selected_at_zero_passes() {
+		$session                                                = $this->session( array( 'authorizationAmount' => 50.00 ) );
+		$session['shippingOptions'][0]['amountIncludingTax'] = 0;
+		$quote                                                  = $this->quote();
+		$quote['rates'][0]['cost']                              = 0.0;
+		$quote['rates'][0]['tax']                               = 0.0;
+		$this->assertNull( OrderValidator::check( $this->snapshot(), $session, $quote ) );
+	}
+
+	public function test_a_negative_authorization_amount_is_amount_mismatch() {
+		$session = $this->session( array( 'authorizationAmount' => -58.11 ) );
+		$this->assertSame( 'amount_mismatch', OrderValidator::check( $this->snapshot(), $session, $this->quote() ) );
+	}
+
 	public function test_matched_rate_is_the_stored_rate() {
 		$rate = OrderValidator::matchedRate( $this->session(), $this->quote() );
 		$this->assertSame( 7.5, $rate['cost'] );

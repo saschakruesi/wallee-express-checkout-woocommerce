@@ -211,7 +211,7 @@ final class ShippingController {
 	}
 
 	/**
-	 * Stores destination and rates on the row; the last callback wins. A failure
+	 * Stores destination and rates on the row while it is still open; the last callback wins. A failure
 	 * is logged and does not affect the response.
 	 *
 	 * @param SessionRecord $record      Row.
@@ -220,20 +220,21 @@ final class ShippingController {
 	 */
 	private function storeQuote( SessionRecord $record, array $destination, array $rates ): void {
 		try {
-			$this->repository->update(
+			$stored = $this->repository->storeQuote(
 				$record->id(),
 				array(
-					'shipping_quote' => array(
-						'destination' => array(
-							'country'  => $destination['country'],
-							'state'    => $destination['state'],
-							'postcode' => $destination['postcode'],
-							'city'     => $destination['city'],
-						),
-						'rates'       => $rates,
+					'destination' => array(
+						'country'  => $destination['country'],
+						'state'    => $destination['state'],
+						'postcode' => $destination['postcode'],
+						'city'     => $destination['city'],
 					),
+					'rates'       => $rates,
 				)
 			);
+			if ( ! $stored ) {
+				call_user_func( $this->log, sprintf( 'Shipping quote was not stored for session row %d (state changed).', $record->id() ), 'warning' );
+			}
 		} catch ( \Throwable $e ) {
 			call_user_func( $this->log, sprintf( 'Shipping quote could not be stored for session row %d (%s).', $record->id(), get_class( $e ) ), 'error' );
 		}
