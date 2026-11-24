@@ -18,6 +18,8 @@ use Wallee\ExpressCheckout\Tests\Support\FakeSessionRepository;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 use Wallee\ExpressCheckout\Tests\Unit\Http\ReturnHandlerTest;
 
+require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
+
 /**
  * @covers \Wallee\ExpressCheckout\Order\CustomerDetails
  */
@@ -43,9 +45,23 @@ class CustomerDetailsTest extends TestCase {
 	/** @var bool Whether taxes follow the customer's address. */
 	private $tax_follows = false;
 
+	/** @var string WooCommerce's "Calculate tax based on". */
+	private $tax_based_on = 'shipping';
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
+		\WC_Tax::reset();
+		$this->tax_based_on = 'shipping';
+		Functions\when( 'get_option' )->alias(
+			function ( $name, $fallback = false ) {
+				if ( 'woocommerce_tax_based_on' === $name ) {
+					return $this->tax_based_on;
+				}
+
+				return 'woocommerce_shipping_tax_class' === $name ? 'inherit' : $fallback;
+			}
+		);
 		Functions\when( '__' )->returnArg();
 
 		$this->logs        = array();
@@ -145,6 +161,17 @@ class CustomerDetailsTest extends TestCase {
 		$this->repository->row['shipping_quote'] = null;
 		$this->deferred();
 		$this->api->transaction['shippingAddress'] = array( 'country' => 'AT' );
+
+		$this->details()->collectAfterPayment( $this->record(), $this->order );
+
+		$this->assertSame( array( self::NOTE_PREFIX . 'destination_changed).' ), $this->order->notes );
+	}
+
+	public function test_a_deferred_check_compares_the_billing_address_when_taxes_follow_it() {
+		$this->tax_follows  = true;
+		$this->tax_based_on = 'billing';
+		$this->deferred();
+		$this->api->transaction['billingAddress'] = array( 'country' => 'DE' );
 
 		$this->details()->collectAfterPayment( $this->record(), $this->order );
 

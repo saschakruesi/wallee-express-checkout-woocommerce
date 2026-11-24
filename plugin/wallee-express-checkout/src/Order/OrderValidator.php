@@ -13,11 +13,11 @@ use Wallee\ExpressCheckout\Support\Money;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The comparison methods (`check`, `environment`, `destination`,
- * `inTaxLocation`, `selectedOption`, `matchedRate`, `email`) make no
- * WooCommerce calls. Everything read from a wallee response is treated as
- * untrusted and possibly absent: a missing key is a failed check, never a PHP
- * notice. `stockAndCoupons` and `customerCoupons` talk to WooCommerce; they
+ * The comparison methods (`check`, `environment`, `selectedOption`,
+ * `matchedRate`, `email`, `noticeCountry`) make no WooCommerce calls;
+ * `destination` asks WooCommerce for tax rates (TaxDestination). Everything
+ * read from a wallee response is treated as untrusted and possibly absent: a
+ * missing key is a failed check, never a PHP notice. `stockAndCoupons` and `customerCoupons` talk to WooCommerce; they
  * are unit tested with stand-ins and verified on the staging shop.
  */
 final class OrderValidator {
@@ -38,7 +38,8 @@ final class OrderValidator {
 
 	/**
 	 * The wallet's address is in another country than the shipping quote or,
-	 * where taxes follow the customer's address, the snapshot's tax location.
+	 * where taxes follow the customer's address, the address taxes are based
+	 * on has other tax rates than the snapshot's tax location.
 	 */
 	const DESTINATION_CHANGED = 'destination_changed';
 
@@ -150,25 +151,7 @@ final class OrderValidator {
 	 * and the tax basis is not the shop base address.
 	 */
 	public static function taxFollowsAddress(): bool {
-		return wc_tax_enabled() && 'base' !== get_option( 'woocommerce_tax_based_on', 'shipping' );
-	}
-
-	/**
-	 * Whether an address lies in the snapshot's tax location: same country
-	 * and, when the tax location has a state and a state is given, the same
-	 * state.
-	 *
-	 * @param CartSnapshot $snapshot Snapshot.
-	 * @param string       $country  Country code.
-	 * @param string|null  $state    State code, null to compare the country only.
-	 */
-	public static function inTaxLocation( CartSnapshot $snapshot, string $country, ?string $state ): bool {
-		$location = $snapshot->taxLocation();
-		if ( 0 !== strcasecmp( $country, $location['country'] ) ) {
-			return false;
-		}
-
-		return null === $state || '' === $location['state'] || 0 === strcasecmp( $state, $location['state'] );
+		return TaxDestination::BASIS_NONE !== TaxDestination::basis();
 	}
 
 	/**
@@ -184,16 +167,18 @@ final class OrderValidator {
 
 	/**
 	 * Compares the country of the wallet's address with the stored shipping
-	 * quote and, where taxes follow the address, with the snapshot's tax
-	 * location.
+	 * quote and, where taxes follow the customer's address, the address taxes
+	 * are based on with the snapshot's tax location (TaxDestination: same
+	 * WooCommerce tax rates for every class involved).
 	 *
-	 * @param CartSnapshot $snapshot            Snapshot.
-	 * @param array|null   $quote               Stored shipping quote, null without one.
-	 * @param string       $country             Country of the shipping address (billing as fallback), empty if unknown.
-	 * @param bool         $tax_follows_address Result of taxFollowsAddress().
+	 * @param CartSnapshot $snapshot    Snapshot.
+	 * @param array|null   $quote       Stored shipping quote, null without one.
+	 * @param string       $country     Country of the shipping address (billing as fallback), empty if unknown.
+	 * @param array|null   $tax_address Address taxes are based on (TaxDestination::orderAddress()), null when
+	 *                                  taxes do not follow the customer's address.
 	 * @return string|null Null if consistent or the country is unknown, else `destination_changed`.
 	 */
-	public static function destination( CartSnapshot $snapshot, ?array $quote, string $country, bool $tax_follows_address ): ?string {
+	public static function destination( CartSnapshot $snapshot, ?array $quote, string $country, ?array $tax_address ): ?string {
 		if ( '' === $country ) {
 			return null;
 		}
@@ -201,11 +186,31 @@ final class OrderValidator {
 		if ( is_string( $quoted ) && 0 !== strcasecmp( $quoted, $country ) ) {
 			return self::DESTINATION_CHANGED;
 		}
-		if ( $tax_follows_address && ! self::inTaxLocation( $snapshot, $country, null ) ) {
+		if ( null !== $tax_address && isset( $tax_address['country'] ) && is_string( $tax_address['country'] ) && '' !== $tax_address['country']
+			&& ! TaxDestination::sameRates( $snapshot, $tax_address ) ) {
 			return self::DESTINATION_CHANGED;
 		}
 
 		return null;
+	}
+
+	/**
+	 * The country a destination refusal may name to the customer: the
+	 * delivery country when it is not the one the order was calculated for
+	 * (the quote's country, else the tax location's). Otherwise the refusal
+	 * is about something else (state, postcode, city or the billing address)
+	 * and no country is named.
+	 *
+	 * @param CartSnapshot $snapshot Snapshot.
+	 * @param array|null   $quote    Stored shipping quote, null without one.
+	 * @param string       $country  Delivery country, empty if unknown.
+	 * @return string The country code, '' for none.
+	 */
+	public static function noticeCountry( CartSnapshot $snapshot, ?array $quote, string $country ): string {
+		$quoted     = null === $quote ? null : self::nested( $quote, 'destination', 'country' );
+		$calculated = is_string( $quoted ) ? $quoted : $snapshot->taxLocation()['country'];
+
+		return '' === $country || 0 === strcasecmp( $country, $calculated ) ? '' : $country;
 	}
 
 	/**

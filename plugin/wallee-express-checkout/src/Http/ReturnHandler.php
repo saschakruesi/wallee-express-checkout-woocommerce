@@ -15,6 +15,7 @@ use Wallee\ExpressCheckout\Order\LinkScheduler;
 use Wallee\ExpressCheckout\Order\OrderFactory;
 use Wallee\ExpressCheckout\Order\OrderService;
 use Wallee\ExpressCheckout\Order\OrderValidator;
+use Wallee\ExpressCheckout\Order\TaxDestination;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\UrlSigner;
 use Wallee\ExpressCheckout\Session\SessionRecord;
@@ -413,7 +414,8 @@ final class ReturnHandler {
 	 * still be valid for it before the customer is sent to wallee's payment
 	 * step: an e-mail address exists (owner decision, design amendment 2),
 	 * the coupons are valid for that e-mail, and the address is in the
-	 * country the shipping and the taxes were calculated for (amendment 3);
+	 * country the shipping was calculated for and, where taxes follow the
+	 * customer's address, has the tax rates the order was calculated with;
 	 * then WooCommerce's tentative coupon hold is taken.
 	 * A transaction that cannot be read is not a failure: the customer goes
 	 * on, the background link retries, and the checks are repeated once the
@@ -620,7 +622,8 @@ final class ReturnHandler {
 			return OrderValidator::COUPON_INVALID;
 		}
 
-		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $this->tax_follows_address ) ) {
+		$tax_address = $this->tax_follows_address ? TaxDestination::orderAddress( $order ) : null;
+		if ( null !== OrderValidator::destination( $snapshot, $record->shippingQuote(), self::orderCountry( $order ), $tax_address ) ) {
 			return OrderValidator::DESTINATION_CHANGED;
 		}
 
@@ -706,7 +709,9 @@ final class ReturnHandler {
 			return $this->toCart( Notices::paymentTaken( (string) $order->get_order_number() ) );
 		}
 
-		return $this->toCart( Notices::forReason( $reason, $transaction_id > 0 && '' !== $state ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN, self::orderCountry( $order ) ) );
+		$country = OrderValidator::noticeCountry( $record->snapshot(), $record->shippingQuote(), self::orderCountry( $order ) );
+
+		return $this->toCart( Notices::forReason( $reason, $transaction_id > 0 && '' !== $state ? Notices::CHARGE_NONE : Notices::CHARGE_UNKNOWN, $country ) );
 	}
 
 	/**

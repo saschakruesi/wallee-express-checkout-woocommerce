@@ -17,6 +17,7 @@ use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 require_once dirname( __DIR__, 2 ) . '/Support/wc-order-stub.php';
 require_once dirname( __DIR__, 2 ) . '/Support/wc-product-stub.php';
 require_once dirname( __DIR__, 2 ) . '/Support/wc-coupon-stub.php';
+require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
 
 /**
  * @covers \Wallee\ExpressCheckout\Order\OrderValidator
@@ -26,6 +27,12 @@ class OrderValidatorTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
+		\WC_Tax::reset();
+		Functions\when( 'get_option' )->alias(
+			static function ( $name, $fallback = false ) {
+				return 'woocommerce_shipping_tax_class' === $name ? 'inherit' : $fallback;
+			}
+		);
 		Functions\when( 'is_email' )->alias(
 			static function ( $email ) {
 				return false === filter_var( $email, FILTER_VALIDATE_EMAIL ) ? false : $email;
@@ -372,37 +379,48 @@ class OrderValidatorTest extends TestCase {
 		$this->assertFalse( OrderValidator::taxFollowsAddress() );
 	}
 
-	public function test_tax_location_compares_country_and_a_set_state() {
-		$snapshot = $this->snapshot();
-		$this->assertTrue( OrderValidator::inTaxLocation( $snapshot, 'ch', 'ZH' ), 'no state in the tax location' );
-		$this->assertFalse( OrderValidator::inTaxLocation( $snapshot, 'DE', null ) );
-
-		$data                          = CartSnapshotTest::data();
-		$data['tax_location']['state'] = 'CA';
-		$data['tax_location']['country'] = 'US';
-		$state                         = CartSnapshot::fromArray( $data );
-		$this->assertTrue( OrderValidator::inTaxLocation( $state, 'US', 'ca' ) );
-		$this->assertFalse( OrderValidator::inTaxLocation( $state, 'US', 'NY' ) );
-		$this->assertFalse( OrderValidator::inTaxLocation( $state, 'US', '' ) );
-		$this->assertTrue( OrderValidator::inTaxLocation( $state, 'US', null ), 'country only' );
-	}
-
 	public function test_destination_must_match_the_quote_country() {
 		$quote = array( 'destination' => array( 'country' => 'CH' ) );
 
-		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'CH', false ) );
-		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'ch', true ) );
-		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), $quote, 'DE', false ) );
-		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, '', true ), 'unknown country' );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'CH', null ) );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, 'ch', self::address( 'CH' ) ) );
+		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), $quote, 'DE', null ) );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), $quote, '', self::address( 'DE' ) ), 'unknown country' );
 	}
 
-	public function test_destination_must_match_the_tax_country_only_when_taxes_follow_the_address() {
-		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'DE', false ) );
-		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), null, 'DE', true ) );
+	public function test_the_tax_address_must_have_the_rates_of_the_tax_location_when_given() {
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'DE', null ), 'taxes do not follow the address' );
+		$this->assertSame( 'destination_changed', OrderValidator::destination( $this->snapshot(), null, 'DE', self::address( 'DE' ) ) );
 		$this->assertSame(
 			'destination_changed',
-			OrderValidator::destination( $this->snapshot(), array( 'destination' => array( 'country' => 'DE' ) ), 'DE', true ),
-			'quote and address agree, but both are outside the tax location'
+			OrderValidator::destination( $this->snapshot(), array( 'destination' => array( 'country' => 'DE' ) ), 'DE', self::address( 'DE' ) ),
+			'quote and address agree, but both are taxed differently'
+		);
+		$this->assertSame(
+			'destination_changed',
+			OrderValidator::destination( $this->snapshot(), array( 'destination' => array( 'country' => 'CH' ) ), 'CH', self::address( 'DE' ) ),
+			'billing-based taxes: the billing address is taxed differently'
+		);
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'CH', self::address( 'CH', 'BE' ) ), 'national rates' );
+		$this->assertNull( OrderValidator::destination( $this->snapshot(), null, 'CH', self::address( '' ) ), 'unknown tax address country' );
+	}
+
+	public function test_a_refusal_names_the_delivery_country_only_when_it_is_not_the_calculated_one() {
+		$quote = array( 'destination' => array( 'country' => 'CH' ) );
+
+		$this->assertSame( 'DE', OrderValidator::noticeCountry( $this->snapshot(), $quote, 'DE' ) );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), $quote, 'ch' ) );
+		$this->assertSame( 'AT', OrderValidator::noticeCountry( $this->snapshot(), null, 'AT' ), 'no quote: the tax location' );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), null, 'CH' ) );
+		$this->assertSame( '', OrderValidator::noticeCountry( $this->snapshot(), $quote, '' ) );
+	}
+
+	private static function address( string $country, string $state = '' ): array {
+		return array(
+			'country'  => $country,
+			'state'    => $state,
+			'postcode' => '',
+			'city'     => '',
 		);
 	}
 

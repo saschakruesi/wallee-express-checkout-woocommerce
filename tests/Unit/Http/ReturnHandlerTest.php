@@ -22,6 +22,8 @@ use Wallee\ExpressCheckout\Tests\Support\FakeWc;
 use Wallee\ExpressCheckout\Tests\Support\HoldingOrder;
 use Wallee\ExpressCheckout\Tests\Unit\Cart\CartSnapshotTest;
 
+require_once dirname( __DIR__, 2 ) . '/Support/wc-tax-stub.php';
+
 /**
  * @covers \Wallee\ExpressCheckout\Http\ReturnHandler
  * @covers \Wallee\ExpressCheckout\Order\CustomerDetails
@@ -62,6 +64,9 @@ class ReturnHandlerTest extends TestCase {
 	/** @var bool Whether taxes follow the customer's address. */
 	private $tax_follows = false;
 
+	/** @var string WooCommerce's "Calculate tax based on". */
+	private $tax_based_on = 'shipping';
+
 	/** @var string Host of the configured wallee base URL. */
 	private $wallee_host = 'app-wallee.com';
 
@@ -71,6 +76,17 @@ class ReturnHandlerTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
+		\WC_Tax::reset();
+		$this->tax_based_on = 'shipping';
+		Functions\when( 'get_option' )->alias(
+			function ( $name, $fallback = false ) {
+				if ( 'woocommerce_tax_based_on' === $name ) {
+					return $this->tax_based_on;
+				}
+
+				return 'woocommerce_shipping_tax_class' === $name ? 'inherit' : $fallback;
+			}
+		);
 		Functions\when( '__' )->returnArg();
 		Functions\when( 'wp_salt' )->justReturn( 'salt' );
 		Functions\when( 'home_url' )->justReturn( 'https://shop.test/' );
@@ -862,6 +878,49 @@ class ReturnHandlerTest extends TestCase {
 	public function test_the_tax_country_is_accepted_when_taxes_follow_the_address() {
 		$this->tax_follows = true;
 		$this->virtual_purchase( 'CH' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+	}
+
+	public function test_taxes_by_billing_address_compare_the_billing_address_and_do_not_name_the_country() {
+		$this->tax_follows                         = true;
+		$this->tax_based_on                        = 'billing';
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'CH' );
+		$this->api->transaction['billingAddress']  = array( 'country' => 'DE' );
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertSame( 'error: Express checkout is not available for the selected delivery address. You have not been charged. Please use the regular checkout to complete your order.', $this->notices[0] );
+	}
+
+	public function test_taxes_by_shipping_address_ignore_another_billing_country() {
+		$this->tax_follows                         = true;
+		$this->api->transaction['shippingAddress'] = array( 'country' => 'CH' );
+		$this->api->transaction['billingAddress']  = array( 'country' => 'DE' );
+
+		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
+		$this->assertSame( array(), $this->orders->failed );
+	}
+
+	public function test_a_postcode_with_other_rates_fails_the_order_without_naming_the_country() {
+		$this->tax_follows                         = true;
+		\WC_Tax::$rows[]                           = \WC_Tax::row( 40, 'CH', '', 1.0, array( 'postcode' => '8000' ) );
+		$this->api->transaction['shippingAddress'] = array(
+			'country'  => 'CH',
+			'postcode' => '3000',
+		);
+
+		$this->assertFailedBeforePayment( 'destination_changed', $this->handler()->handle( $this->query() ) );
+		$this->assertStringNotContainsString( 'Switzerland', $this->notices[0] );
+		$this->assertStringContainsString( 'the selected delivery address', $this->notices[0] );
+	}
+
+	public function test_another_state_with_national_rates_is_accepted() {
+		$this->tax_follows                         = true;
+		$this->api->transaction['shippingAddress'] = array(
+			'country'     => 'CH',
+			'postalState' => 'BE',
+			'postcode'    => '8000',
+		);
 
 		$this->assertSame( self::WALLEE, $this->handler()->handle( $this->query() ) );
 	}

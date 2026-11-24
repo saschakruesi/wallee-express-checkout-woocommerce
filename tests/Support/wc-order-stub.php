@@ -16,6 +16,12 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 		public $billing_email        = '';
 		public $billing_country      = '';
 		public $shipping_country     = '';
+		public $billing_state        = '';
+		public $billing_postcode     = '';
+		public $billing_city         = '';
+		public $shipping_state       = '';
+		public $shipping_postcode    = '';
+		public $shipping_city        = '';
 		public $payment_method       = 'wallee_express_checkout';
 		public $payment_method_title = 'wallee Express Checkout';
 		public $created_via          = 'wallee_express_checkout';
@@ -82,6 +88,30 @@ if ( ! class_exists( 'WC_Order', false ) ) {
 
 		public function get_shipping_country() {
 			return $this->shipping_country;
+		}
+
+		public function get_billing_state() {
+			return $this->billing_state;
+		}
+
+		public function get_billing_postcode() {
+			return $this->billing_postcode;
+		}
+
+		public function get_billing_city() {
+			return $this->billing_city;
+		}
+
+		public function get_shipping_state() {
+			return $this->shipping_state;
+		}
+
+		public function get_shipping_postcode() {
+			return $this->shipping_postcode;
+		}
+
+		public function get_shipping_city() {
+			return $this->shipping_city;
 		}
 
 		public function get_created_via() {

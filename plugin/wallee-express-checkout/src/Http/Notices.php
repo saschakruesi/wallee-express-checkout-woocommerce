@@ -133,9 +133,14 @@ final class Notices {
 	 * Wallet message (shipping callback) for a destination express checkout
 	 * does not serve. Nothing was paid at that point.
 	 *
-	 * @param string $country ISO country code of the destination.
+	 * @param string $country ISO country code of the destination, '' when the refusal is not about
+	 *                        the country (another state, postcode or city with other tax rates).
 	 */
 	public static function walletDestination( string $country ): string {
+		if ( '' === self::code( $country ) ) {
+			return __( 'Express checkout is not available for this delivery address. Please choose another address or use the regular checkout.', 'wallee-express-checkout' );
+		}
+
 		return sprintf(
 			/* translators: %s: country name. */
 			__( 'Express checkout is not available for deliveries to %s. Please choose another address or use the regular checkout.', 'wallee-express-checkout' ),

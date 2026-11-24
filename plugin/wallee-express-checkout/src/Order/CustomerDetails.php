@@ -212,7 +212,7 @@ final class CustomerDetails {
 
 	/**
 	 * The return's customer checks for a paid order: coupons valid for the
-	 * e-mail (if there is one) and the destination country.
+	 * e-mail (if there is one) and the destination (country, tax rates).
 	 *
 	 * @param SessionRecord $record    Row.
 	 * @param \WC_Order     $order     Order with the customer data applied.
@@ -238,7 +238,8 @@ final class CustomerDetails {
 			}
 		}
 
-		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), OrderValidator::deliveryCountry( $order ), $this->tax_follows_address );
+		$tax_address = $this->tax_follows_address ? TaxDestination::orderAddress( $order ) : null;
+		$destination = OrderValidator::destination( $snapshot, $record->shippingQuote(), OrderValidator::deliveryCountry( $order ), $tax_address );
 
 		return null !== $destination ? $destination : $coupons;
 	}

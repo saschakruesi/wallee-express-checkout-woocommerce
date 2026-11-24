@@ -7,7 +7,7 @@
 
 namespace Wallee\ExpressCheckout\Http;
 
-use Wallee\ExpressCheckout\Order\OrderValidator;
+use Wallee\ExpressCheckout\Order\TaxDestination;
 use Wallee\ExpressCheckout\Plugin;
 use Wallee\ExpressCheckout\Security\RateLimiter;
 use Wallee\ExpressCheckout\Security\UrlSigner;
@@ -147,9 +147,10 @@ final class ShippingController {
 	 * ids, country, rate limit, tax location, calculation.
 	 *
 	 * Taxes were fixed for the snapshot's tax location. Where WooCommerce
-	 * taxes by the customer's address, a destination outside that location
-	 * (country, and state when the location has one) gets no shipping
-	 * options, so the wallet cannot approve it.
+	 * taxes by the shipping address, a destination with other tax rates than
+	 * that location (TaxDestination) gets no shipping options, so the wallet
+	 * cannot approve it. Where it taxes by the billing address, the callback
+	 * only knows the shipping destination: the return check decides.
 	 *
 	 * @param string $uuid Session UUID from the query.
 	 * @param string $sig  Signature from the query.
@@ -192,12 +193,13 @@ final class ShippingController {
 			'address_1' => self::text( $body, 'street' ),
 		);
 
-		if ( OrderValidator::taxFollowsAddress() && ! OrderValidator::inTaxLocation( $record->snapshot(), $destination['country'], $destination['state'] ) ) {
-			call_user_func( $this->log, sprintf( 'No shipping options for session row %d: destination outside the tax location.', $record->id() ) );
+		if ( TaxDestination::BASIS_SHIPPING === TaxDestination::basis() && ! TaxDestination::sameRates( $record->snapshot(), $destination ) ) {
+			call_user_func( $this->log, sprintf( 'No shipping options for session row %d: destination taxed differently from the tax location.', $record->id() ) );
+			$named = 0 === strcasecmp( $destination['country'], $record->snapshot()->taxLocation()['country'] ) ? '' : $destination['country'];
 
 			return array(
 				'status' => 200,
-				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, Notices::walletDestination( $destination['country'] ) ),
+				'body'   => ShippingRateMapper::error( ShippingOptionsProvider::ERROR_COUNTRY, Notices::walletDestination( $named ) ),
 			);
 		}
 

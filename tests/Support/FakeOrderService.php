@@ -182,12 +182,36 @@ class FakeOrderService extends OrderService {
 	public function applyCustomer( \WC_Order $order, array $transaction, int $customer_id ): bool {
 		$this->applied[]      = array( $order->get_id(), $transaction, $customer_id );
 		$order->billing_email = $this->applied_email;
-		$shipping             = isset( $transaction['shippingAddress']['country'] ) ? (string) $transaction['shippingAddress']['country'] : '';
-		$billing              = isset( $transaction['billingAddress']['country'] ) ? (string) $transaction['billingAddress']['country'] : '';
-		$order->shipping_country = '' !== $shipping ? $shipping : $billing;
-		$order->billing_country  = '' !== $billing ? $billing : $shipping;
+		$shipping             = self::fields( $transaction, 'shippingAddress' );
+		$billing              = self::fields( $transaction, 'billingAddress' );
+		if ( '' === $shipping['country'] ) {
+			$shipping = $billing;
+		}
+		if ( '' === $billing['country'] ) {
+			$billing = $shipping;
+		}
+		foreach ( array( 'country', 'state', 'postcode', 'city' ) as $field ) {
+			$order->{'shipping_' . $field} = $shipping[ $field ];
+			$order->{'billing_' . $field}  = $billing[ $field ];
+		}
 
 		return '' !== $this->applied_email;
+	}
+
+	/**
+	 * Country, state, postcode and city of a transaction address.
+	 *
+	 * @param array  $transaction Transaction.
+	 * @param string $key         `billingAddress` or `shippingAddress`.
+	 */
+	private static function fields( array $transaction, string $key ): array {
+		$address = isset( $transaction[ $key ] ) && is_array( $transaction[ $key ] ) ? $transaction[ $key ] : array();
+		$fields  = array();
+		foreach ( array( 'country' => 'country', 'state' => 'postalState', 'postcode' => 'postcode', 'city' => 'city' ) as $field => $name ) {
+			$fields[ $field ] = isset( $address[ $name ] ) ? (string) $address[ $name ] : '';
+		}
+
+		return $fields;
 	}
 
 	/**

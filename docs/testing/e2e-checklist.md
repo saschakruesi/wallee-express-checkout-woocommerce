@@ -18,7 +18,7 @@ Before starting: WooCommerce > Settings > wallee Express Checkout (own tab, next
 
 ## Shop facts used in the expectations
 
-- Currency CHF. Prices include 8.1 % tax. Taxes are calculated from the shipping address (WooCommerce default) and a guest's location defaults to the shop base, so the tax location of a cart is CH unless the cart's shipping calculator says otherwise. Since 0.1.1 the wallet offers shipping only inside that tax location (design amendment 3): with a CH tax location, DE and other countries get "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout."
+- Currency CHF. Prices include 8.1 % tax. Taxes are calculated from the shipping address (WooCommerce default) and a guest's location defaults to the shop base, so the tax location of a cart is CH unless the cart's shipping calculator says otherwise. Since 0.1.1 the wallet offers shipping only to addresses with the same WooCommerce tax rates as that tax location (design amendment 3; from the third 0.1.1 fix round compared by rates, not by country): with a CH tax location, DE and other countries get "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout."
 - Products: Notebook 25.00 (simple), T-Shirt 30.00 (variable, sizes S, M, L), Gift card 50.00 (virtual).
 - Coupon `TEN`: 10 % off the products (not shipping).
 - Shipping: zone CH has flat rate 8.11 incl. tax (7.50 + 0.61 tax) and free shipping from 100.00; zone DE has flat rate 16.22 incl. tax. No zone elsewhere.
@@ -215,7 +215,7 @@ Expect: a yellow notice on every admin page, without a dismiss button: "wallee E
 
 ### 23. Destination country different from the tax country
 Steps: logged out, empty cart (tax location CH). Add Notebook, wallet button, and in the sheet choose or enter a DE shipping address. If Bogus Pay offers no address choice, record "not testable".
-Expect: no shipping option is offered for the DE address; the sheet shows "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout." and cannot be approved. Log: `destination outside the tax location`. A CH address works as in case 1.
+Expect: no shipping option is offered for the DE address; the sheet shows "Express checkout is not available for deliveries to Germany. Please choose another address or use the regular checkout." and cannot be approved. Log: `destination taxed differently from the tax location`. A CH address works as in case 1, also with another canton than the tax location (CH rates are national).
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -232,6 +232,22 @@ Expect: the first order succeeds with the coupon. The second returns to the cart
 ### 25. Return link older than 2 hours
 Steps: complete case 1 and note the return URL (`...?wc-api=wallee_ec_return&ec_session=...&sig=...`, visible in the browser history before the 3-D Secure step). Open it again more than 2 hours after the wallet session was created.
 Expect: the cart page with the notice "Your express payment session has expired. If an amount was reserved, it will be released. Please start the express payment again." (the row was processed, so the add-on does not claim nothing was charged); not the order-received page; no second order. Log: `too old for its return link`.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 26. Tax rates by postcode (same country)
+Steps: WooCommerce > Settings > Tax > Standard rates: add a row CH, postcode `3000`, rate 0 %, shipping ticked; save. Logged out, empty cart (tax location CH 8000 or none). Add Notebook, wallet button, choose a CH address with postcode 3000; then one with postcode 8000. Delete the rate row afterwards. If Bogus Pay offers no address choice, record "not testable".
+Expect: postcode 3000 gets no shipping options and "Express checkout is not available for this delivery address. Please choose another address or use the regular checkout." (no country named); postcode 8000 gets the options as in case 1. Log: `destination taxed differently from the tax location`.
+
+| Date | Result (pass/fail) | Order ID | Notes |
+|---|---|---|---|
+| | | | |
+
+### 27. Taxes based on the billing address
+Steps: WooCommerce > Settings > Tax > "Calculate tax based on" = Customer billing address. Logged out, empty cart. Add Notebook, wallet button, shipping address CH, billing (payment card) address DE if the wallet lets you choose one; standard approval. Then the same with a CH billing address. Set the option back to shipping address afterwards. Record "not testable" if the wallet sends no separate billing address.
+Expect: the sheet offers shipping for the CH address in both runs (the callback does not refuse on tax grounds). With a DE billing address the customer returns to the cart after approval with "Express checkout is not available for the selected delivery address. You have not been charged. Please use the regular checkout to complete your order."; the order is `Failed`, reason `destination_changed`. With a CH billing address the order goes through as in case 1.
 
 | Date | Result (pass/fail) | Order ID | Notes |
 |---|---|---|---|
@@ -260,7 +276,7 @@ Reason codes after `rejected:` (no order, no charge) or `failed:` (order set to 
 | `process_failed (Class HTTP n ...)` | wallee refused the `process` call (4xx), or the answer was unclear and the session did not move after one retry (order failed). An unclear answer with the session already `PROCESSING`/`AUTHORIZED` is logged as `probably processed` and the order is kept. |
 | `order_update_failed (Class)` | The order could not be marked before the process call (order failed). |
 | `no_email` | After process, wallee returned no e-mail address (order failed; see case 20). |
-| `destination_changed` | After process, the wallet's address is in another country than the shipping quote or the tax location (order failed). |
+| `destination_changed` | After process, the wallet's address is in another country than the shipping quote, or the address taxes are based on (shipping, or billing when taxes follow it) has other tax rates than the tax location (order failed). |
 | `coupon_check_failed` | After process, the coupon check threw an error: order failed unless the money is already reserved or taken, then kept. |
 | `redirect_host_unexpected` | wallee's redirect after process points to a host that is neither wallee nor the shop. The customer is never sent there; the order is kept and the customer goes to the success page when the transaction or session shows a payment under way or done, otherwise the order fails. |
 | `... but transaction T is STATE; order kept` | A technical reason after process with the money already reserved or taken: the order is never failed for it. |

@@ -117,6 +117,7 @@ class NoticesTest extends TestCase {
 	public function test_wallet_messages_never_mention_a_charge() {
 		$this->assertSame( 'Express checkout is not available for deliveries to Switzerland. Please choose another address or use the regular checkout.', Notices::walletDestination( 'CH' ) );
 		$this->assertSame( 'We cannot deliver to the selected address with express checkout. Please choose another address or use the regular checkout.', Notices::walletNoShippingMethod() );
+		$this->assertSame( 'Express checkout is not available for this delivery address. Please choose another address or use the regular checkout.', Notices::walletDestination( '' ), 'no country to name' );
 	}
 
 	public function test_processing_message_is_unchanged() {
