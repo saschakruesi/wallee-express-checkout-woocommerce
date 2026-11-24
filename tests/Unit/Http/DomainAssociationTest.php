@@ -59,6 +59,15 @@ class DomainAssociationTest extends TestCase {
 		$this->assertFalse( DomainAssociation::matches( '' ) );
 	}
 
+	public function test_encoded_or_odd_suffixes_do_not_match() {
+		$this->home( 'https://shop.example' );
+		foreach ( array( '%20', '%2F', '%00', '%23', '/', '.txt', '%2f', ' ' ) as $suffix ) {
+			$uri = self::PATH . $suffix;
+			$this->assertFalse( DomainAssociation::matches( $uri ), $uri );
+			$this->assertNull( DomainAssociation::respond( 'GET', $uri, 'abc' ), $uri );
+		}
+	}
+
 	public function test_home_path_in_subdirectory_is_honoured() {
 		$this->home( 'https://shop.example/shop' );
 		$this->assertTrue( DomainAssociation::matches( '/shop' . self::PATH ) );
@@ -79,7 +88,7 @@ class DomainAssociationTest extends TestCase {
 			$this->assertSame( 'text/plain; charset=utf-8', $response[1]['Content-Type'] );
 			$this->assertSame( 'noindex', $response[1]['X-Robots-Tag'] );
 			$this->assertSame( 'nosniff', $response[1]['X-Content-Type-Options'] );
-			$this->assertSame( 'no-store, max-age=0', $response[1]['Cache-Control'] );
+			$this->assertSame( 'no-store', $response[1]['Cache-Control'] );
 			$this->assertSame( "abc\n123", $response[2] );
 		}
 	}

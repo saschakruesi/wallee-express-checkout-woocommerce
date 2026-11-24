@@ -67,7 +67,7 @@ final class DomainAssociation {
 				'Content-Type'           => 'text/plain; charset=utf-8',
 				'X-Robots-Tag'           => 'noindex',
 				'X-Content-Type-Options' => 'nosniff',
-				'Cache-Control'          => 'no-store, max-age=0',
+				'Cache-Control'          => 'no-store',
 			),
 			$content,
 		);
@@ -77,8 +77,10 @@ final class DomainAssociation {
 	 * `parse_request` callback: emits the response and ends the request.
 	 */
 	public static function serve(): void {
-		$method      = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
-		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
+		// Raw on purpose: it is only compared for strict equality with a constant and never output; sanitising would strip %XX octets and widen the match.
+		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$request_uri = is_string( $request_uri ) ? $request_uri : '';
 
 		$response = self::respond( $method, $request_uri, Plugin::settings()->appleDomainAssociation() );
 		if ( null === $response ) {
